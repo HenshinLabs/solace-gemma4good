@@ -52,8 +52,41 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    val releaseStoreFile = providers.gradleProperty("MASTER_LLM_RELEASE_STORE_FILE").orNull
+        ?: System.getenv("MASTER_LLM_RELEASE_STORE_FILE")
+    val releaseStorePassword = providers.gradleProperty("MASTER_LLM_RELEASE_STORE_PASSWORD").orNull
+        ?: System.getenv("MASTER_LLM_RELEASE_STORE_PASSWORD")
+    val releaseKeyAlias = providers.gradleProperty("MASTER_LLM_RELEASE_KEY_ALIAS").orNull
+        ?: System.getenv("MASTER_LLM_RELEASE_KEY_ALIAS")
+    val releaseKeyPassword = providers.gradleProperty("MASTER_LLM_RELEASE_KEY_PASSWORD").orNull
+        ?: System.getenv("MASTER_LLM_RELEASE_KEY_PASSWORD")
+
+    val hasReleaseSigningConfig = !releaseStoreFile.isNullOrBlank() &&
+        !releaseStorePassword.isNullOrBlank() &&
+        !releaseKeyAlias.isNullOrBlank() &&
+        !releaseKeyPassword.isNullOrBlank()
+
+    signingConfigs {
+        create("release") {
+            if (hasReleaseSigningConfig) {
+                storeFile = file(releaseStoreFile!!)
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+                enableV1Signing = true
+                enableV2Signing = true
+                enableV3Signing = true
+                enableV4Signing = false
+            } else {
+                // Keep release builds installable for local/dev workflows when no release keystore is configured.
+                initWith(getByName("debug"))
+            }
+        }
+    }
+
     buildTypes {
         release {
+            signingConfig = signingConfigs.getByName("release")
             isMinifyEnabled = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
