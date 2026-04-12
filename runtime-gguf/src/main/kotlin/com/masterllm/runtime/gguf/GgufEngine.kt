@@ -1,6 +1,7 @@
 package com.masterllm.runtime.gguf
 
 import android.content.Context
+import android.os.Build
 import com.masterllm.core.domain.model.InferenceParams
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
@@ -58,6 +59,13 @@ class GgufEngine @Inject constructor(
         val nativeBackend: Boolean,
     )
 
+    data class DriverReport(
+        val adrenoDetected: Boolean,
+        val nativeBackendAvailable: Boolean,
+        val turnipAssetsBundled: Boolean,
+        val turnipIcdPath: String?,
+    )
+
     private var modelPath: String? = null
     private var isLoaded: Boolean = false
     private var nativeContextPtr: Long = 0L
@@ -78,6 +86,21 @@ class GgufEngine @Inject constructor(
     fun isModelLoaded(): Boolean = isLoaded
 
     fun getLoadedModelInfo(): LoadedModelInfo? = loadedModelInfo
+
+    fun getDriverReport(): DriverReport {
+        ensureNativeLibraryLoaded()
+
+        val turnipAssetsBundled = assetExists("turnip/icd.d/freedreno_icd.aarch64.json") &&
+            assetExists("turnip/libvulkan_freedreno.so")
+        val icdPath = if (turnipAssetsBundled) prepareTurnipIcdPath() else null
+
+        return DriverReport(
+            adrenoDetected = isLikelyAdrenoDevice(),
+            nativeBackendAvailable = nativeLibraryAvailable,
+            turnipAssetsBundled = turnipAssetsBundled,
+            turnipIcdPath = icdPath,
+        )
+    }
 
     fun getRuntimeConfig(): RuntimeConfig = runtimeConfig
 
@@ -351,6 +374,37 @@ class GgufEngine @Inject constructor(
             // Assets are optional; app should continue without packaged Turnip blobs.
             Timber.d("GgufEngine: Optional asset missing $assetPath")
         }
+    }
+
+    private fun assetExists(assetPath: String): Boolean {
+        return runCatching {
+            appContext.assets.open(assetPath).use { }
+            true
+        }.getOrDefault(false)
+    }
+
+    private fun isLikelyAdrenoDevice(): Boolean {
+        val socManufacturer = runCatching {
+            Build::class.java.getField("SOC_MANUFACTURER").get(null)?.toString()
+        }.getOrNull()
+        val socModel = runCatching {
+            Build::class.java.getField("SOC_MODEL").get(null)?.toString()
+        }.getOrNull()
+
+        val fingerprint = listOfNotNull(
+            Build.HARDWARE,
+            Build.BOARD,
+            Build.DEVICE,
+            Build.PRODUCT,
+            socManufacturer,
+            socModel,
+        ).joinToString(separator = " ").lowercase()
+
+        return fingerprint.contains("adreno") ||
+            fingerprint.contains("qcom") ||
+            fingerprint.contains("qualcomm") ||
+            fingerprint.contains("msm") ||
+            Regex("\\bsm[0-9]{3,}\\b").containsMatchIn(fingerprint)
     }
 
     private fun buildFallbackResponse(prompt: String, maxTokens: Int): String {

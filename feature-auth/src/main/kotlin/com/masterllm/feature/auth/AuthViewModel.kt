@@ -2,9 +2,10 @@ package com.masterllm.feature.auth
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.masterllm.core.domain.model.HfUserProfile
 import com.masterllm.core.domain.repository.SettingsRepository
 import com.masterllm.core.network.HuggingFaceApi
+import com.masterllm.core.network.normalizeHfToken
+import com.masterllm.core.network.toBearerAuthHeader
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
@@ -61,18 +62,29 @@ class AuthViewModel @Inject constructor(
     }
 
     private fun login() {
-        val token = _uiState.value.token.trim()
-        if (token.isEmpty()) {
+        val normalizedToken = normalizeHfToken(_uiState.value.token)
+        if (normalizedToken.isEmpty()) {
             _uiState.update { it.copy(error = "Token cannot be empty") }
+            return
+        }
+
+        val authHeader = toBearerAuthHeader(normalizedToken)
+        if (authHeader == null) {
+            _uiState.update { it.copy(error = "Invalid token format") }
             return
         }
 
         viewModelScope.launch {
             _uiState.update { it.copy(isLoading = true, error = null) }
             try {
-                val response = huggingFaceApi.whoami("Bearer $token")
-                val username = response.name ?: "Unknown"
-                settingsRepository.setHfToken(token)
+                val response = runCatching { huggingFaceApi.whoamiV2(authHeader) }
+                    .getOrElse { huggingFaceApi.whoami(authHeader) }
+                val username = response.name
+                    ?.takeIf { it.isNotBlank() }
+                    ?: response.fullname?.takeIf { it.isNotBlank() }
+                    ?: "hf-user"
+
+                settingsRepository.setHfToken(normalizedToken)
                 settingsRepository.setHfUsername(username)
                 _uiState.update {
                     it.copy(
@@ -82,10 +94,11 @@ class AuthViewModel @Inject constructor(
                     )
                 }
             } catch (e: Exception) {
+                val errorText = "Token validation failed: ${e.message ?: "network error"}"
                 _uiState.update {
                     it.copy(
                         isLoading = false,
-                        error = "Invalid token or network error: ${e.message}",
+                        error = errorText,
                     )
                 }
             }

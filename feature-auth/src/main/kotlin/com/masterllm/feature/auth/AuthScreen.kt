@@ -33,23 +33,24 @@ fun AuthScreen(
     Column(
         modifier = modifier
             .fillMaxSize()
+            .windowInsetsPadding(WindowInsets.statusBars.only(WindowInsetsSides.Top))
             .verticalScroll(rememberScrollState())
-            .padding(24.dp),
+            .padding(horizontal = 20.dp, vertical = 12.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Spacer(Modifier.height(48.dp))
+        Spacer(Modifier.height(12.dp))
 
         // Header
         Icon(
             Icons.Default.Hub,
             contentDescription = null,
-            modifier = Modifier.size(72.dp),
+            modifier = Modifier.size(56.dp),
             tint = MaterialTheme.colorScheme.primary,
         )
-        Spacer(Modifier.height(16.dp))
+        Spacer(Modifier.height(12.dp))
         Text(
             text = "Hugging Face",
-            style = MaterialTheme.typography.headlineMedium,
+            style = MaterialTheme.typography.titleLarge,
             fontWeight = FontWeight.Bold,
         )
         Text(

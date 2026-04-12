@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.masterllm.core.domain.model.ImageFrequency
 import com.masterllm.core.domain.repository.SettingsRepository
+import com.masterllm.runtime.gguf.GgufEngine
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -21,6 +22,8 @@ data class SettingsUiState(
 	val characterConsistencyEnabled: Boolean = true,
 	val gpuAccelerationEnabled: Boolean = false,
 	val modelStoragePath: String = "",
+	val gpuDriverStatus: String = "Detecting GPU driver...",
+	val gpuDriverDetails: String = "",
 	val error: String? = null,
 )
 
@@ -39,6 +42,7 @@ sealed interface SettingsAction {
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
 	private val settingsRepository: SettingsRepository,
+	private val ggufEngine: GgufEngine,
 ) : ViewModel() {
 
 	private val _uiState = MutableStateFlow(SettingsUiState())
@@ -85,6 +89,7 @@ class SettingsViewModel @Inject constructor(
 				_uiState.update { it.copy(modelStoragePath = value) }
 			}
 		}
+		refreshGpuDriverStatus()
 	}
 
 	fun onAction(action: SettingsAction) {
@@ -118,7 +123,10 @@ class SettingsViewModel @Inject constructor(
 
 			is SettingsAction.GpuAccelerationChanged -> {
 				_uiState.update { it.copy(gpuAccelerationEnabled = action.enabled) }
-				viewModelScope.launch { settingsRepository.setGpuAccelerationEnabled(action.enabled) }
+				viewModelScope.launch {
+					settingsRepository.setGpuAccelerationEnabled(action.enabled)
+					refreshGpuDriverStatus()
+				}
 			}
 
 			is SettingsAction.ModelStoragePathChanged -> {
@@ -127,16 +135,51 @@ class SettingsViewModel @Inject constructor(
 
 			SettingsAction.SaveModelStoragePath -> {
 				val path = _uiState.value.modelStoragePath.trim()
-				if (path.isEmpty()) {
-					_uiState.update { it.copy(error = "Model storage path cannot be empty") }
-					return
-				}
 				viewModelScope.launch {
 					settingsRepository.setModelStoragePath(path)
 				}
 			}
 
 			SettingsAction.DismissError -> _uiState.update { it.copy(error = null) }
+		}
+	}
+
+	private fun refreshGpuDriverStatus() {
+		val driverReport = ggufEngine.getDriverReport()
+		val loadedInfo = ggufEngine.getLoadedModelInfo()
+
+		val backendLabel = when {
+			loadedInfo == null -> "Idle"
+			loadedInfo.nativeBackend && loadedInfo.gpuLayers > 0 -> "GPU"
+			loadedInfo.nativeBackend -> "CPU native"
+			else -> "CPU fallback"
+		}
+
+		val headline = when {
+			driverReport.adrenoDetected && driverReport.turnipAssetsBundled ->
+				"Adreno detected - Turnip package ready"
+			driverReport.adrenoDetected ->
+				"Adreno detected - Turnip package missing"
+			driverReport.turnipAssetsBundled ->
+				"Turnip package bundled (non-Adreno device)"
+			else ->
+				"System Vulkan/CPU mode"
+		}
+
+		val details = buildString {
+			append("Native backend: ")
+			append(if (driverReport.nativeBackendAvailable) "available" else "missing")
+			append(" | Active mode: ")
+			append(backendLabel)
+			append(" | ICD: ")
+			append(driverReport.turnipIcdPath ?: "not set")
+		}
+
+		_uiState.update {
+			it.copy(
+				gpuDriverStatus = headline,
+				gpuDriverDetails = details,
+			)
 		}
 	}
 }

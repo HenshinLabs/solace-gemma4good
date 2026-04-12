@@ -70,4 +70,6 @@ dependencies {
     testImplementation(libs.coroutines.test)
     testImplementation(libs.turbine)
     testImplementation(libs.truth)
+    testImplementation(libs.retrofit)
+    testImplementation(libs.okhttp)
 }

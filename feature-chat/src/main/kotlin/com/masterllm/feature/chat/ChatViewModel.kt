@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.masterllm.core.domain.model.*
 import com.masterllm.core.domain.repository.ConversationRepository
 import com.masterllm.core.domain.repository.ModelRepository
+import com.masterllm.core.domain.repository.SettingsRepository
 import com.masterllm.runtime.gguf.GgufEngine
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.CancellationException
@@ -20,6 +21,20 @@ import kotlinx.coroutines.sync.withLock
 import java.util.UUID
 import javax.inject.Inject
 
+data class GenerationStats(
+    val modelDisplayName: String,
+    val backend: String,
+    val promptTokens: Int,
+    val generatedTokens: Int,
+    val generatedChars: Int,
+    val durationMs: Long,
+    val tokensPerSecond: Double,
+    val threadCount: Int,
+    val gpuLayers: Int,
+    val contextSize: Int,
+    val generatedAtEpochMs: Long = System.currentTimeMillis(),
+)
+
 data class ChatUiState(
     val conversations: List<Conversation> = emptyList(),
     val currentConversation: Conversation? = null,
@@ -31,6 +46,7 @@ data class ChatUiState(
     val streamingText: String = "",
     val showConversationList: Boolean = true,
     val error: String? = null,
+    val lastGenerationStats: GenerationStats? = null,
 )
 
 sealed interface ChatAction {
@@ -49,6 +65,7 @@ sealed interface ChatAction {
 class ChatViewModel @Inject constructor(
     private val conversationRepository: ConversationRepository,
     private val modelRepository: ModelRepository,
+    private val settingsRepository: SettingsRepository,
     private val ggufEngine: GgufEngine,
 ) : ViewModel() {
 
@@ -81,6 +98,21 @@ class ChatViewModel @Inject constructor(
                     )
                 }
             }
+        }
+        viewModelScope.launch {
+            combine(
+                settingsRepository.getDefaultThreadCount(),
+                settingsRepository.getGpuAccelerationEnabled(),
+            ) { threadCount, gpuEnabled -> threadCount to gpuEnabled }
+                .collect { (threadCount, gpuEnabled) ->
+                    val config = ggufEngine.getRuntimeConfig()
+                    ggufEngine.updateRuntimeConfig(
+                        config.copy(
+                            threadCount = threadCount.coerceAtLeast(1),
+                            enableGpuOffload = gpuEnabled,
+                        )
+                    )
+                }
         }
     }
 
@@ -125,11 +157,15 @@ class ChatViewModel @Inject constructor(
             _uiState.update { it.copy(isGenerating = true, streamingText = "") }
 
             try {
-                val targetModelId = ensureEngineReady(convo)
+                val activeModel = ensureEngineReady(convo)
                     ?: throw IllegalStateException("Download a GGUF model in Marketplace before chatting.")
+
+                val targetModelId = activeModel.id
 
                 val prompt = buildPrompt(text)
                 val builder = StringBuilder()
+                val promptTokens = ggufEngine.estimateTokenCount(prompt)
+                val startedAtNs = System.nanoTime()
 
                 ggufEngine.generate(prompt).collect { token ->
                     if (!_uiState.value.isGenerating) throw CancellationException("Generation stopped")
@@ -138,6 +174,7 @@ class ChatViewModel @Inject constructor(
                 }
 
                 val finalText = builder.toString().trim()
+                val completedAtNs = System.nanoTime()
                 if (finalText.isNotEmpty()) {
                     val assistantMsg = Message(
                         id = UUID.randomUUID().toString(),
@@ -146,6 +183,28 @@ class ChatViewModel @Inject constructor(
                         content = finalText,
                     )
                     conversationRepository.addMessage(assistantMsg)
+                }
+
+                val elapsedMs = ((completedAtNs - startedAtNs) / 1_000_000L).coerceAtLeast(1L)
+                val generatedTokens = ggufEngine.estimateTokenCount(finalText)
+                val tokensPerSecond = generatedTokens.toDouble() / (elapsedMs / 1000.0)
+                val loadedInfo = ggufEngine.getLoadedModelInfo()
+
+                _uiState.update {
+                    it.copy(
+                        lastGenerationStats = GenerationStats(
+                            modelDisplayName = activeModel.displayName.ifBlank { activeModel.repoId },
+                            backend = resolveBackendLabel(loadedInfo),
+                            promptTokens = promptTokens,
+                            generatedTokens = generatedTokens,
+                            generatedChars = finalText.length,
+                            durationMs = elapsedMs,
+                            tokensPerSecond = tokensPerSecond,
+                            threadCount = loadedInfo?.threadCount ?: ggufEngine.getRuntimeConfig().threadCount,
+                            gpuLayers = loadedInfo?.gpuLayers ?: 0,
+                            contextSize = loadedInfo?.contextSize ?: ggufEngine.getContextSize(),
+                        )
+                    )
                 }
 
                 if (convo.modelId != targetModelId) {
@@ -242,7 +301,7 @@ class ChatViewModel @Inject constructor(
         }
     }
 
-    private suspend fun ensureEngineReady(conversation: Conversation): String? = engineMutex.withLock {
+    private suspend fun ensureEngineReady(conversation: Conversation): LlmModel? = engineMutex.withLock {
         val modelId = _uiState.value.selectedModelId
             ?: conversation.modelId.takeIf { it.isNotBlank() }
             ?: _uiState.value.availableModels.firstOrNull()?.id
@@ -257,7 +316,14 @@ class ChatViewModel @Inject constructor(
             ggufEngine.loadModel(path).getOrElse { throw it }
             loadedModelId = model.id
         }
-        return model.id
+        return model
+    }
+
+    private fun resolveBackendLabel(info: GgufEngine.LoadedModelInfo?): String {
+        if (info == null) return "CPU fallback"
+        if (info.nativeBackend && info.gpuLayers > 0) return "GPU"
+        if (info.nativeBackend) return "CPU native"
+        return "CPU fallback"
     }
 
     private fun buildPrompt(userText: String): String {

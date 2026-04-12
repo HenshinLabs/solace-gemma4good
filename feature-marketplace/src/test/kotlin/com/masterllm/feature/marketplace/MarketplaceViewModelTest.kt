@@ -1,6 +1,7 @@
 package com.masterllm.feature.marketplace
 
 import android.content.Context
+import android.os.Environment
 import com.google.common.truth.Truth.assertThat
 import com.masterllm.core.domain.model.DownloadState
 import com.masterllm.core.domain.model.HfModelFile
@@ -175,14 +176,49 @@ class MarketplaceViewModelTest {
         assertThat(File(modelDir, "unet/diffusion_pytorch_model.safetensors").exists()).isTrue()
     }
 
+    @Test
+    fun downloadModel_usesConfiguredStoragePathWhenProvided() = runTest(dispatcher) {
+        val customRoot = createTempDir(prefix = "custom-storage-")
+        val modelRepository = InMemoryModelRepository()
+        val settingsRepository = InMemorySettingsRepository(
+            token = "hf_custom_storage_token",
+            modelStoragePath = customRoot.absolutePath,
+        )
+        val api = FakeHuggingFaceApi().apply {
+            searchResponses["GGUF"] = emptyList()
+            downloadPayloads["tinyllama.Q5_K_M.gguf"] = "GGUF_PAYLOAD".encodeToByteArray()
+        }
+
+        val vm = createViewModel(modelRepository, settingsRepository, api)
+        advanceUntilIdle()
+
+        val info = HfModelInfo(
+            modelId = "TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF",
+            siblings = listOf(HfModelFile("tinyllama.Q5_K_M.gguf", 12L)),
+        )
+        val file = HfModelFile("tinyllama.Q5_K_M.gguf", 12L)
+
+        vm.onAction(MarketplaceAction.DownloadModel(info, file))
+        waitUntil {
+            modelRepository.getModelByRepoAndFile(info.modelId, file.rfilename)
+                ?.downloadState == DownloadState.DOWNLOADED
+        }
+
+        val stored = modelRepository.getModelByRepoAndFile(info.modelId, file.rfilename)
+        assertThat(stored?.localPath).startsWith(customRoot.absolutePath)
+        assertThat(File(stored!!.localPath!!).exists()).isTrue()
+    }
+
     private fun createViewModel(
         modelRepository: InMemoryModelRepository,
         settingsRepository: InMemorySettingsRepository,
         api: FakeHuggingFaceApi,
     ): MarketplaceViewModel {
         val filesDir = createTempDir(prefix = "marketplace-test-")
+        val externalDownloadsDir = File(filesDir, "external/downloads").apply { mkdirs() }
         val context = mockk<Context>()
         every { context.filesDir } returns filesDir
+        every { context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS) } returns externalDownloadsDir
 
         return MarketplaceViewModel(
             modelRepository = modelRepository,
@@ -247,7 +283,10 @@ class MarketplaceViewModelTest {
         }
     }
 
-    private class InMemorySettingsRepository(token: String) : SettingsRepository {
+    private class InMemorySettingsRepository(
+        token: String,
+        modelStoragePath: String = "",
+    ) : SettingsRepository {
         private val hfToken = MutableStateFlow(token)
         private val hfUsername = MutableStateFlow("")
         private val threshold = MutableStateFlow(80)
@@ -256,7 +295,7 @@ class MarketplaceViewModelTest {
         private val imageFrequency = MutableStateFlow(ImageFrequency.KEY_MOMENTS)
         private val consistency = MutableStateFlow(true)
         private val gpu = MutableStateFlow(true)
-        private val modelPath = MutableStateFlow("")
+        private val modelPath = MutableStateFlow(modelStoragePath)
 
         override fun getHfToken(): Flow<String> = hfToken
         override suspend fun setHfToken(token: String) { hfToken.value = token }
@@ -310,6 +349,8 @@ class MarketplaceViewModelTest {
         }
 
         override suspend fun whoami(auth: String): HfWhoamiResponse = HfWhoamiResponse(name = "tester")
+
+        override suspend fun whoamiV2(auth: String): HfWhoamiResponse = HfWhoamiResponse(name = "tester")
 
         override suspend fun downloadFile(
             repoId: String,

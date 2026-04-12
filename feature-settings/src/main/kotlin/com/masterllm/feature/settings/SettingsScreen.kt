@@ -107,6 +107,22 @@ fun SettingsScreen(
                             onCheckedChange = { viewModel.onAction(SettingsAction.GpuAccelerationChanged(it)) },
                         )
                     }
+
+                    Spacer(Modifier.height(12.dp))
+                    HorizontalDivider()
+                    Spacer(Modifier.height(12.dp))
+
+                    Text("GPU Driver", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = state.gpuDriverStatus,
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    Text(
+                        text = state.gpuDriverDetails,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                    )
                 }
             }
 
@@ -171,6 +187,12 @@ fun SettingsScreen(
                         label = { Text("Model storage path") },
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
                         singleLine = true,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        text = "Leave empty to use the app Download folder automatically.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
                     )
                     Spacer(Modifier.height(8.dp))
                     Button(onClick = { viewModel.onAction(SettingsAction.SaveModelStoragePath) }) {

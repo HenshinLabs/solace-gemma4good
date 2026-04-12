@@ -1,12 +1,14 @@
 package com.masterllm.feature.marketplace
 
 import android.content.Context
+import android.os.Environment
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.masterllm.core.domain.model.*
 import com.masterllm.core.domain.repository.ModelRepository
 import com.masterllm.core.domain.repository.SettingsRepository
 import com.masterllm.core.network.HuggingFaceApi
+import com.masterllm.core.network.toBearerAuthHeader
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
@@ -49,12 +51,19 @@ class MarketplaceViewModel @Inject constructor(
 
     private val _uiState = MutableStateFlow(MarketplaceUiState())
     val uiState: StateFlow<MarketplaceUiState> = _uiState.asStateFlow()
+    @Volatile
+    private var modelStorageRootPath: String = ""
 
     init {
         // Watch downloaded models
         viewModelScope.launch {
             modelRepository.getDownloadedModels().collect { models ->
                 _uiState.update { it.copy(downloadedModels = models) }
+            }
+        }
+        viewModelScope.launch {
+            settingsRepository.getModelStoragePath().collect { path ->
+                modelStorageRootPath = path.trim()
             }
         }
         // Load popular GGUF models on start
@@ -146,8 +155,8 @@ class MarketplaceViewModel @Inject constructor(
 
                 modelRepository.saveModel(model)
 
-                val token = settingsRepository.getHfToken().first().trim()
-                val authHeader = token.ifBlank { null }?.let { "Bearer $it" }
+                val token = settingsRepository.getHfToken().first()
+                val authHeader = toBearerAuthHeader(token)
 
                 val response = huggingFaceApi.downloadFile(
                     repoId = modelInfo.modelId,
@@ -225,8 +234,8 @@ class MarketplaceViewModel @Inject constructor(
                 )
                 modelRepository.saveModel(model)
 
-                val token = settingsRepository.getHfToken().first().trim()
-                val authHeader = token.ifBlank { null }?.let { "Bearer $it" }
+                val token = settingsRepository.getHfToken().first()
+                val authHeader = toBearerAuthHeader(token)
                 val totalFiles = filesToDownload.size.coerceAtLeast(1)
 
                 filesToDownload.forEachIndexed { index, bundleFile ->
@@ -267,10 +276,13 @@ class MarketplaceViewModel @Inject constructor(
     }
 
     private fun buildModelDirectory(repoId: String): File {
-        val modelsDir = File(appContext.filesDir, "models/hf")
+        val modelsDir = resolveModelsRootDirectory()
         if (!modelsDir.exists()) modelsDir.mkdirs()
 
-        val segments = repoId.split('/').filter { it.isNotBlank() }
+        val segments = repoId
+            .split('/')
+            .map(::sanitizePathSegment)
+            .filter { it.isNotBlank() }
         return segments.fold(modelsDir) { current, segment ->
             File(current, segment)
         }.also { it.mkdirs() }
@@ -278,10 +290,39 @@ class MarketplaceViewModel @Inject constructor(
 
     private fun buildModelOutputFile(repoId: String, remoteFileName: String): File {
         val modelRoot = buildModelDirectory(repoId)
-        val normalized = remoteFileName.trimStart('/')
-        val output = File(modelRoot, normalized)
+        val normalizedSegments = remoteFileName
+            .trimStart('/')
+            .split('/')
+            .filter { it.isNotBlank() }
+            .map(::sanitizePathSegment)
+
+        val output = normalizedSegments.fold(modelRoot) { current, segment ->
+            File(current, segment)
+        }
         output.parentFile?.mkdirs()
         return output
+    }
+
+    private fun resolveModelsRootDirectory(): File {
+        val configuredPath = modelStorageRootPath
+        if (configuredPath.isNotBlank()) {
+            val configured = File(configuredPath)
+            if (configured.exists() || configured.mkdirs()) {
+                return configured
+            }
+        }
+
+        val externalDownloads = appContext.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
+        val root = File(externalDownloads ?: appContext.filesDir, "MasterLLM/models/hf")
+        if (!root.exists()) root.mkdirs()
+        return root
+    }
+
+    private fun sanitizePathSegment(segment: String): String {
+        return segment
+            .replace(Regex("[\\\\/:*?\"<>|]"), "_")
+            .trim()
+            .ifBlank { "_" }
     }
 
     private suspend fun writeToDiskWithProgress(

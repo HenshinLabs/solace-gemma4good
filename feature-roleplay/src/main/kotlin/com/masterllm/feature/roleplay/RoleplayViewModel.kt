@@ -6,6 +6,7 @@ import com.masterllm.core.domain.model.*
 import com.masterllm.core.domain.repository.ConversationRepository
 import com.masterllm.core.domain.repository.ModelRepository
 import com.masterllm.core.domain.repository.RoleplayRepository
+import com.masterllm.core.domain.repository.SettingsRepository
 import com.masterllm.runtime.gguf.GgufEngine
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.CancellationException
@@ -67,6 +68,7 @@ class RoleplayViewModel @Inject constructor(
     private val roleplayRepository: RoleplayRepository,
     private val conversationRepository: ConversationRepository,
     private val modelRepository: ModelRepository,
+    private val settingsRepository: SettingsRepository,
     private val ggufEngine: GgufEngine,
 ) : ViewModel() {
 
@@ -92,6 +94,21 @@ class RoleplayViewModel @Inject constructor(
                     })
                 }
             }
+        }
+        viewModelScope.launch {
+            combine(
+                settingsRepository.getDefaultThreadCount(),
+                settingsRepository.getGpuAccelerationEnabled(),
+            ) { threadCount, gpuEnabled -> threadCount to gpuEnabled }
+                .collect { (threadCount, gpuEnabled) ->
+                    val config = ggufEngine.getRuntimeConfig()
+                    ggufEngine.updateRuntimeConfig(
+                        config.copy(
+                            threadCount = threadCount.coerceAtLeast(1),
+                            enableGpuOffload = gpuEnabled,
+                        )
+                    )
+                }
         }
     }
 

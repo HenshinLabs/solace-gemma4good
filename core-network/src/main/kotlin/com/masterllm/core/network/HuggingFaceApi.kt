@@ -27,6 +27,12 @@ interface HuggingFaceApi {
         @Path("repoId", encoded = true) repoId: String,
     ): HfModelResponse
 
+    /** Preferred token validation endpoint. */
+    @GET("api/whoami-v2")
+    suspend fun whoamiV2(
+        @Header("Authorization") auth: String,
+    ): HfWhoamiResponse
+
     /** Validate token & get user profile. */
     @GET("api/whoami")
     suspend fun whoami(

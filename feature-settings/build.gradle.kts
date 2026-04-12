@@ -32,6 +32,7 @@ dependencies {
     implementation(project(":core-domain"))
     implementation(project(":core-data"))
     implementation(project(":core-ui"))
+    implementation(project(":runtime-gguf"))
 
     // Compose
     implementation(platform(libs.compose.bom))

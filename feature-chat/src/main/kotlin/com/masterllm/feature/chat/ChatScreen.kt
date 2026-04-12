@@ -238,6 +238,12 @@ private fun ChatPane(
                 }
             }
 
+            state.lastGenerationStats?.let { stats ->
+                item(key = "generation_stats_${stats.generatedAtEpochMs}") {
+                    GenerationStatsCard(stats)
+                }
+            }
+
             // Typing indicator
             if (state.isGenerating && state.streamingText.isEmpty()) {
                 item(key = "typing") {
@@ -255,6 +261,43 @@ private fun ChatPane(
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun GenerationStatsCard(stats: GenerationStats) {
+    ElevatedCard(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 4.dp, bottom = 2.dp),
+        shape = RoundedCornerShape(14.dp),
+    ) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Text(
+                text = "Runtime stats",
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Spacer(Modifier.height(4.dp))
+
+            Text(
+                text = "Model: ${stats.modelDisplayName}",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Text(
+                text = "Backend: ${stats.backend} | Threads: ${stats.threadCount} | GPU layers: ${stats.gpuLayers} | Context: ${stats.contextSize}",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Text(
+                text = "Prompt tokens: ${stats.promptTokens} | Output tokens: ${stats.generatedTokens} (${stats.generatedChars} chars)",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Text(
+                text = "Latency: ${stats.durationMs} ms | Speed: ${"%.2f".format(stats.tokensPerSecond)} tok/s",
+                style = MaterialTheme.typography.bodySmall,
+                fontWeight = FontWeight.Medium,
+            )
         }
     }
 }

@@ -46,8 +46,8 @@ android {
         applicationId = "com.masterllm.app"
         minSdk = libs.versions.minSdk.get().toInt()
         targetSdk = libs.versions.targetSdk.get().toInt()
-        versionCode = 2
-        versionName = "1.0.1"
+        versionCode = 3
+        versionName = "1.0.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -117,7 +117,7 @@ android.applicationVariants.all {
     outputs.all {
         @Suppress("DEPRECATION")
         val apkOutput = this as com.android.build.gradle.api.ApkVariantOutput
-        val normalizedVersion = versionName ?: "1.0.1"
+        val normalizedVersion = versionName ?: "1.0.2"
         val normalizedBuildType = buildType.name
         apkOutput.outputFileName = "MasterLLM-v${normalizedVersion}-${normalizedBuildType}.apk"
     }
