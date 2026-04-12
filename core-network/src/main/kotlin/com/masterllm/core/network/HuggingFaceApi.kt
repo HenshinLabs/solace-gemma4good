@@ -1,18 +1,44 @@
 package com.masterllm.core.network
 
-import retrofit2.http.GET
-import retrofit2.http.Path
-import retrofit2.http.Query
+import com.masterllm.core.network.model.*
+import okhttp3.ResponseBody
+import retrofit2.Response
+import retrofit2.http.*
 
 /**
  * Hugging Face Hub API service.
- * Full endpoints will be added in Phase 3.
  */
 interface HuggingFaceApi {
 
+    /** Search models by query. */
     @GET("api/models")
     suspend fun searchModels(
         @Query("search") query: String,
+        @Query("filter") filter: String? = null,
+        @Query("sort") sort: String = "downloads",
+        @Query("direction") direction: String = "-1",
         @Query("limit") limit: Int = 20,
-    ): List<Any> // Will be replaced with proper response models
+        @Query("offset") offset: Int = 0,
+    ): List<HfModelResponse>
+
+    /** Get model info by repo ID (e.g., "TheBloke/Llama-2-7B-GGUF"). */
+    @GET("api/models/{repoId}")
+    suspend fun getModelInfo(
+        @Path("repoId", encoded = true) repoId: String,
+    ): HfModelResponse
+
+    /** Validate token & get user profile. */
+    @GET("api/whoami")
+    suspend fun whoami(
+        @Header("Authorization") auth: String,
+    ): HfWhoamiResponse
+
+    /** Download a file from a repo – streamed. */
+    @Streaming
+    @GET("{repoId}/resolve/main/{fileName}")
+    suspend fun downloadFile(
+        @Path("repoId", encoded = true) repoId: String,
+        @Path("fileName", encoded = true) fileName: String,
+        @Header("Authorization") auth: String? = null,
+    ): Response<ResponseBody>
 }

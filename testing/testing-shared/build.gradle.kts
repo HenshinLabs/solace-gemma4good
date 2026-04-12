@@ -24,11 +24,9 @@ android {
 dependencies {
     implementation(project(":core-domain"))
 
-    // Coroutines
     implementation(libs.coroutines.core)
     implementation(libs.coroutines.test)
 
-    // Testing utilities
     implementation(libs.junit5.api)
     implementation(libs.mockk)
     implementation(libs.truth)

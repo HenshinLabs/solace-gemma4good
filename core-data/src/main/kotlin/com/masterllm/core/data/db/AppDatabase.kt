@@ -6,5 +6,21 @@ import androidx.room.RoomDatabase
 /**
  * Room database for the Master LLM app.
  */
-@Database(entities = [ModelEntity::class], version = 1, exportSchema = false)
-abstract class AppDatabase : RoomDatabase()
+@Database(
+    entities = [
+        ModelEntity::class,
+        ConversationEntity::class,
+        MessageEntity::class,
+        RoleplaySessionEntity::class,
+        CharacterVisualCacheEntity::class,
+    ],
+    version = 1,
+    exportSchema = false,
+)
+abstract class AppDatabase : RoomDatabase() {
+    abstract fun modelDao(): ModelDao
+    abstract fun conversationDao(): ConversationDao
+    abstract fun messageDao(): MessageDao
+    abstract fun roleplaySessionDao(): RoleplaySessionDao
+    abstract fun characterVisualCacheDao(): CharacterVisualCacheDao
+}

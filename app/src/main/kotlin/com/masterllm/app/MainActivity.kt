@@ -7,8 +7,8 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
 import androidx.compose.ui.Modifier
+import com.masterllm.app.navigation.MasterLLMApp
 import com.masterllm.core.ui.theme.MasterLLMTheme
 import dagger.hilt.android.AndroidEntryPoint
 
@@ -21,9 +21,9 @@ class MainActivity : ComponentActivity() {
             MasterLLMTheme {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
-                    color = MaterialTheme.colorScheme.background
+                    color = MaterialTheme.colorScheme.background,
                 ) {
-                    Text("Master LLM — Coming Soon")
+                    MasterLLMApp(modifier = Modifier.fillMaxSize())
                 }
             }
         }

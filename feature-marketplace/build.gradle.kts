@@ -31,6 +31,7 @@ android {
 dependencies {
     implementation(project(":core-domain"))
     implementation(project(":core-data"))
+    implementation(project(":core-network"))
     implementation(project(":core-ui"))
 
     // Compose
@@ -59,10 +60,15 @@ dependencies {
     implementation(libs.coroutines.core)
     implementation(libs.coroutines.android)
 
+    // Network types exposed by HuggingFaceApi (Response/ResponseBody)
+    implementation(libs.retrofit)
+    implementation(libs.okhttp)
+
     // Timber
     implementation(libs.timber)
 
     // Testing
+    testImplementation("junit:junit:4.13.2")
     testImplementation(libs.junit5.api)
     testRuntimeOnly(libs.junit5.engine)
     testImplementation(libs.mockk)

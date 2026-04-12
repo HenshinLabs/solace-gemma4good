@@ -48,3 +48,4 @@ include(":runtime-imagegen")
 // Testing modules
 include(":testing:testing-shared")
 include(":testing:testing-fixtures")
+include(":testing:testing-robot")

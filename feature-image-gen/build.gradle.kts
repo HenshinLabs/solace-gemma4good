@@ -31,6 +31,7 @@ android {
 dependencies {
     implementation(project(":core-domain"))
     implementation(project(":core-data"))
+    implementation(project(":runtime-imagegen"))
     implementation(project(":core-ui"))
 
     // Compose

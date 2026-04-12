@@ -25,16 +25,13 @@ dependencies {
     implementation(project(":core-domain"))
     implementation(project(":core-data"))
 
-    // Room (for InMemoryDatabase)
     implementation(libs.room.runtime)
     implementation(libs.room.ktx)
     implementation(libs.room.testing)
 
-    // Coroutines
     implementation(libs.coroutines.core)
     implementation(libs.coroutines.test)
 
-    // Testing utilities
     implementation(libs.junit5.api)
     implementation(libs.truth)
 }
