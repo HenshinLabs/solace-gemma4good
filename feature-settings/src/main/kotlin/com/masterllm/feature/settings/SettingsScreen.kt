@@ -123,6 +123,23 @@ fun SettingsScreen(
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
                     )
+
+                    if (state.gpuValidationChecks.isNotEmpty()) {
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            text = "Validation checks",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        state.gpuValidationChecks.forEach { check ->
+                            Text(
+                                text = "• $check",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f),
+                            )
+                        }
+                    }
                 }
             }
 
@@ -184,15 +201,29 @@ fun SettingsScreen(
                         value = state.modelStoragePath,
                         onValueChange = { viewModel.onAction(SettingsAction.ModelStoragePathChanged(it)) },
                         modifier = Modifier.fillMaxWidth(),
-                        label = { Text("Model storage path") },
+                        label = { Text("Custom model storage path (optional)") },
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
                         singleLine = true,
                     )
                     Spacer(Modifier.height(8.dp))
                     Text(
-                        text = "Leave empty to use the app Download folder automatically.",
+                        text = "Default path: ${state.defaultModelStoragePath}",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                    )
+                    Text(
+                        text = "Effective path: ${state.effectiveModelStoragePath}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                    )
+                    Text(
+                        text = if (state.usingDefaultStoragePath) {
+                            "Using default app download folder"
+                        } else {
+                            "Using custom storage folder"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary,
                     )
                     Spacer(Modifier.height(8.dp))
                     Button(onClick = { viewModel.onAction(SettingsAction.SaveModelStoragePath) }) {

@@ -29,11 +29,17 @@ data class MarketplaceUiState(
     val isDownloading: Map<String, Float> = emptyMap(), // modelId → progress 0..1
     val error: String? = null,
     val selectedTab: Int = 0, // 0=Browse, 1=Downloaded
+    val selectedModelDetails: HfModelInfo? = null,
+    val isLoadingModelDetails: Boolean = false,
+    val modelDetailsError: String? = null,
 )
 
 sealed interface MarketplaceAction {
     data class SearchQueryChanged(val query: String) : MarketplaceAction
     data object Search : MarketplaceAction
+    data class OpenModelDetails(val modelInfo: HfModelInfo) : MarketplaceAction
+    data object CloseModelDetails : MarketplaceAction
+    data object RefreshSelectedModelDetails : MarketplaceAction
     data class DownloadModel(val modelInfo: HfModelInfo, val file: HfModelFile) : MarketplaceAction
     data class DownloadDiffusersBundle(val modelInfo: HfModelInfo) : MarketplaceAction
     data class DeleteModel(val modelId: String) : MarketplaceAction
@@ -75,12 +81,27 @@ class MarketplaceViewModel @Inject constructor(
             is MarketplaceAction.SearchQueryChanged ->
                 _uiState.update { it.copy(searchQuery = action.query) }
             MarketplaceAction.Search -> searchModels(_uiState.value.searchQuery)
+            is MarketplaceAction.OpenModelDetails -> openModelDetails(action.modelInfo)
+            MarketplaceAction.CloseModelDetails -> {
+                _uiState.update {
+                    it.copy(
+                        selectedModelDetails = null,
+                        isLoadingModelDetails = false,
+                        modelDetailsError = null,
+                    )
+                }
+            }
+            MarketplaceAction.RefreshSelectedModelDetails -> {
+                _uiState.value.selectedModelDetails?.let { openModelDetails(it) }
+            }
             is MarketplaceAction.DownloadModel -> downloadModel(action.modelInfo, action.file)
             is MarketplaceAction.DownloadDiffusersBundle -> downloadDiffusersBundle(action.modelInfo)
             is MarketplaceAction.DeleteModel -> deleteModel(action.modelId)
             is MarketplaceAction.TabChanged ->
                 _uiState.update { it.copy(selectedTab = action.tab) }
-            MarketplaceAction.DismissError -> _uiState.update { it.copy(error = null) }
+            MarketplaceAction.DismissError -> _uiState.update {
+                it.copy(error = null, modelDetailsError = null)
+            }
         }
     }
 
@@ -94,26 +115,61 @@ class MarketplaceViewModel @Inject constructor(
                     filter = null,
                     limit = 20,
                 )
-                val mapped = results.map { r ->
-                    HfModelInfo(
-                        modelId = r.id ?: r.modelId ?: "",
-                        author = r.author ?: "",
-                        downloads = r.downloads,
-                        likes = r.likes,
-                        tags = r.tags ?: emptyList(),
-                        pipelineTag = r.pipelineTag ?: "",
-                        siblings = r.siblings?.map { s ->
-                            HfModelFile(rfilename = s.rfilename, size = s.size)
-                        } ?: emptyList(),
-                        description = r.description ?: "",
-                    )
-                }
+                val mapped = results.map(::mapModelResponse)
                 _uiState.update { it.copy(isSearching = false, searchResults = mapped) }
             } catch (e: Exception) {
                 _uiState.update {
                     it.copy(isSearching = false, error = "Search failed: ${e.message}")
                 }
             }
+        }
+    }
+
+    private fun openModelDetails(seedModel: HfModelInfo) {
+        val requestedRepo = seedModel.modelId
+        if (requestedRepo.isBlank()) {
+            _uiState.update { it.copy(modelDetailsError = "Invalid model ID") }
+            return
+        }
+
+        _uiState.update {
+            it.copy(
+                selectedModelDetails = seedModel.copy(
+                    modelCardUrl = seedModel.modelCardUrl.ifBlank { buildModelCardUrl(requestedRepo) },
+                ),
+                isLoadingModelDetails = true,
+                modelDetailsError = null,
+            )
+        }
+
+        viewModelScope.launch {
+            runCatching { huggingFaceApi.getModelInfo(requestedRepo) }
+                .onSuccess { response ->
+                    val mapped = mapModelResponse(response)
+                    _uiState.update { current ->
+                        if (current.selectedModelDetails?.modelId == requestedRepo) {
+                            current.copy(
+                                selectedModelDetails = mapped,
+                                isLoadingModelDetails = false,
+                                modelDetailsError = null,
+                            )
+                        } else {
+                            current
+                        }
+                    }
+                }
+                .onFailure { e ->
+                    _uiState.update { current ->
+                        if (current.selectedModelDetails?.modelId == requestedRepo) {
+                            current.copy(
+                                isLoadingModelDetails = false,
+                                modelDetailsError = "Unable to load full model details: ${e.message}",
+                            )
+                        } else {
+                            current
+                        }
+                    }
+                }
         }
     }
 
@@ -323,6 +379,42 @@ class MarketplaceViewModel @Inject constructor(
             .replace(Regex("[\\\\/:*?\"<>|]"), "_")
             .trim()
             .ifBlank { "_" }
+    }
+
+    private fun mapModelResponse(response: com.masterllm.core.network.model.HfModelResponse): HfModelInfo {
+        val modelId = response.id ?: response.modelId ?: ""
+        return HfModelInfo(
+            modelId = modelId,
+            author = response.author ?: "",
+            sha = response.sha ?: "",
+            downloads = response.downloads,
+            likes = response.likes,
+            tags = response.tags ?: emptyList(),
+            pipelineTag = response.pipelineTag ?: "",
+            siblings = response.siblings?.map { sibling ->
+                HfModelFile(rfilename = sibling.rfilename, size = sibling.size)
+            } ?: emptyList(),
+            lastModified = response.lastModified ?: "",
+            isPrivate = response.isPrivate,
+            description = response.description ?: "",
+            cardData = response.cardData
+                ?.mapNotNull { (key, value) ->
+                    val parsed = when (value) {
+                        is String -> value
+                        is Number, is Boolean -> value.toString()
+                        else -> null
+                    }
+                    parsed?.let { key to it }
+                }
+                ?.toMap()
+                ?: emptyMap(),
+            modelCardUrl = buildModelCardUrl(modelId),
+        )
+    }
+
+    private fun buildModelCardUrl(modelId: String): String {
+        if (modelId.isBlank()) return ""
+        return "https://huggingface.co/$modelId"
     }
 
     private suspend fun writeToDiskWithProgress(

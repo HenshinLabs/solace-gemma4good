@@ -8,11 +8,13 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
@@ -73,6 +75,16 @@ fun MarketplaceScreen(
                     1 -> DownloadedTab(state, viewModel::onAction)
                 }
             }
+        }
+
+        state.selectedModelDetails?.let { modelDetails ->
+            ModelDetailsSheet(
+                model = modelDetails,
+                isLoading = state.isLoadingModelDetails,
+                modelDetailsError = state.modelDetailsError,
+                downloading = state.isDownloading,
+                onAction = viewModel::onAction,
+            )
         }
     }
 }
@@ -190,6 +202,44 @@ private fun ModelSearchCard(
                 it.rfilename.equals("model_index.json", ignoreCase = true) ||
                     it.rfilename.endsWith("/model_index.json", ignoreCase = true)
             } && safetensorFiles.isNotEmpty()
+            val recommendedFile = preferredDownloadFile(model.siblings)
+
+            Spacer(Modifier.height(12.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                OutlinedButton(
+                    onClick = { onAction(MarketplaceAction.OpenModelDetails(model)) },
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Icon(Icons.Default.Info, contentDescription = null)
+                    Spacer(Modifier.width(6.dp))
+                    Text("Details")
+                }
+
+                recommendedFile?.let { file ->
+                    val downloadKey = "${model.modelId}/${file.rfilename}"
+                    val inProgress = downloading[downloadKey] != null
+                    Button(
+                        onClick = { onAction(MarketplaceAction.DownloadModel(model, file)) },
+                        modifier = Modifier.weight(1f),
+                        enabled = !inProgress,
+                    ) {
+                        if (inProgress) {
+                            CircularProgressIndicator(
+                                progress = { downloading[downloadKey] ?: 0f },
+                                modifier = Modifier.size(18.dp),
+                                strokeWidth = 2.dp,
+                            )
+                        } else {
+                            Icon(Icons.Default.Download, contentDescription = null)
+                        }
+                        Spacer(Modifier.width(6.dp))
+                        Text(if (inProgress) "Downloading" else "Download")
+                    }
+                }
+            }
 
             if (isDiffusersRepo) {
                 Spacer(Modifier.height(12.dp))
@@ -285,6 +335,194 @@ private fun ModelSearchCard(
                     )
                 }
             }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ModelDetailsSheet(
+    model: HfModelInfo,
+    isLoading: Boolean,
+    modelDetailsError: String?,
+    downloading: Map<String, Float>,
+    onAction: (MarketplaceAction) -> Unit,
+) {
+    val uriHandler = LocalUriHandler.current
+    val downloadableFiles = model.siblings.filter(::isDownloadableFile)
+    val ggufFiles = downloadableFiles.filter { it.rfilename.endsWith(".gguf", ignoreCase = true) }
+    val safetensorFiles = downloadableFiles.filter { it.rfilename.endsWith(".safetensors", ignoreCase = true) }
+    val isDiffusersRepo = model.siblings.any {
+        it.rfilename.equals("model_index.json", ignoreCase = true) ||
+            it.rfilename.endsWith("/model_index.json", ignoreCase = true)
+    } && safetensorFiles.isNotEmpty()
+    val recommended = preferredDownloadFile(downloadableFiles)
+
+    ModalBottomSheet(
+        onDismissRequest = { onAction(MarketplaceAction.CloseModelDetails) },
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Text(
+                text = model.modelId,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+            )
+
+            if (model.author.isNotBlank()) {
+                Text(
+                    text = "Author: ${model.author}",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            }
+
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text("Downloads: ${formatCount(model.downloads)}", style = MaterialTheme.typography.bodySmall)
+                Text("Likes: ${formatCount(model.likes)}", style = MaterialTheme.typography.bodySmall)
+                Text("Files: ${model.siblings.size}", style = MaterialTheme.typography.bodySmall)
+            }
+
+            if (model.description.isNotBlank()) {
+                Text(
+                    text = model.description,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f),
+                )
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                OutlinedButton(
+                    onClick = {
+                        if (model.modelCardUrl.isNotBlank()) {
+                            uriHandler.openUri(model.modelCardUrl)
+                        }
+                    },
+                    enabled = model.modelCardUrl.isNotBlank(),
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Icon(Icons.AutoMirrored.Filled.OpenInNew, contentDescription = null)
+                    Spacer(Modifier.width(6.dp))
+                    Text("Model Card")
+                }
+                OutlinedButton(
+                    onClick = { onAction(MarketplaceAction.RefreshSelectedModelDetails) },
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Icon(Icons.Default.Refresh, contentDescription = null)
+                    Spacer(Modifier.width(6.dp))
+                    Text("Refresh")
+                }
+            }
+
+            if (isLoading) {
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+            }
+
+            modelDetailsError?.let { err ->
+                Text(
+                    text = err,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+
+            recommended?.let { file ->
+                val downloadKey = "${model.modelId}/${file.rfilename}"
+                val progress = downloading[downloadKey]
+                FilledTonalButton(
+                    onClick = { onAction(MarketplaceAction.DownloadModel(model, file)) },
+                    enabled = progress == null,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    if (progress != null) {
+                        CircularProgressIndicator(
+                            progress = { progress },
+                            modifier = Modifier.size(18.dp),
+                            strokeWidth = 2.dp,
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text("Downloading recommended file")
+                    } else {
+                        Icon(Icons.Default.Download, contentDescription = null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Download recommended file")
+                    }
+                }
+            }
+
+            if (isDiffusersRepo) {
+                val bundleKey = "${model.modelId}/__diffusers_bundle__"
+                val bundleProgress = downloading[bundleKey]
+                FilledTonalButton(
+                    onClick = { onAction(MarketplaceAction.DownloadDiffusersBundle(model)) },
+                    enabled = bundleProgress == null,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    if (bundleProgress != null) {
+                        CircularProgressIndicator(
+                            progress = { bundleProgress },
+                            modifier = Modifier.size(18.dp),
+                            strokeWidth = 2.dp,
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text("Downloading Diffusers bundle")
+                    } else {
+                        Icon(Icons.Default.DownloadForOffline, contentDescription = null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Download Diffusers bundle")
+                    }
+                }
+            }
+
+            if (model.cardData.isNotEmpty()) {
+                Text(
+                    text = "Model metadata",
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                model.cardData.entries.take(6).forEach { (key, value) ->
+                    Text(
+                        text = "$key: $value",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            }
+
+            if (downloadableFiles.isEmpty()) {
+                Text(
+                    text = "No GGUF or SafeTensors files were found in this repository.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                )
+            } else {
+                Text(
+                    text = "Downloadable files (${downloadableFiles.size})",
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 420.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    items(downloadableFiles, key = { it.rfilename }) { file ->
+                        val progress = downloading["${model.modelId}/${file.rfilename}"]
+                        GgufFileRow(file = file, downloadProgress = progress) {
+                            onAction(MarketplaceAction.DownloadModel(model, file))
+                        }
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(8.dp))
         }
     }
 }
@@ -430,4 +668,40 @@ private fun formatCount(count: Int): String = when {
     count >= 1_000_000 -> "%.1fM".format(count / 1_000_000.0)
     count >= 1_000 -> "%.1fK".format(count / 1_000.0)
     else -> count.toString()
+}
+
+private fun isDownloadableFile(file: HfModelFile): Boolean {
+    val lower = file.rfilename.lowercase()
+    return lower.endsWith(".gguf") || lower.endsWith(".safetensors")
+}
+
+private fun preferredDownloadFile(files: List<HfModelFile>): HfModelFile? {
+    if (files.isEmpty()) return null
+
+    val gguf = files.filter { it.rfilename.endsWith(".gguf", ignoreCase = true) }
+    if (gguf.isNotEmpty()) {
+        return gguf.minByOrNull { ggufPreferenceScore(it.rfilename) }
+    }
+
+    val safetensors = files.filter { it.rfilename.endsWith(".safetensors", ignoreCase = true) }
+    if (safetensors.isNotEmpty()) {
+        return safetensors.minByOrNull { it.size ?: Long.MAX_VALUE } ?: safetensors.first()
+    }
+
+    return null
+}
+
+private fun ggufPreferenceScore(fileName: String): Int {
+    val lower = fileName.lowercase()
+    return when {
+        "q4_k_m" in lower -> 0
+        "q4_k_s" in lower -> 1
+        "q5_k_m" in lower -> 2
+        "q5_k_s" in lower -> 3
+        "q6_k" in lower -> 4
+        "q8_0" in lower -> 5
+        "f16" in lower -> 6
+        "f32" in lower -> 7
+        else -> 20
+    }
 }

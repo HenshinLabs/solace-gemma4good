@@ -1,6 +1,7 @@
 package com.masterllm.runtime.gguf
 
 import android.content.Context
+import android.content.pm.PackageManager
 import android.os.Build
 import com.masterllm.core.domain.model.InferenceParams
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -61,9 +62,16 @@ class GgufEngine @Inject constructor(
 
     data class DriverReport(
         val adrenoDetected: Boolean,
+        val qualcommDetected: Boolean,
+        val vulkanSupported: Boolean,
         val nativeBackendAvailable: Boolean,
         val turnipAssetsBundled: Boolean,
         val turnipIcdPath: String?,
+        val socManufacturer: String?,
+        val socModel: String?,
+        val deviceHardware: String,
+        val buildDisplay: String,
+        val androidRelease: String,
     )
 
     private var modelPath: String? = null
@@ -90,15 +98,31 @@ class GgufEngine @Inject constructor(
     fun getDriverReport(): DriverReport {
         ensureNativeLibraryLoaded()
 
+        val socManufacturer = readSocField("SOC_MANUFACTURER")
+        val socModel = readSocField("SOC_MODEL")
+        val fingerprint = buildDeviceFingerprint(socManufacturer, socModel)
+
         val turnipAssetsBundled = assetExists("turnip/icd.d/freedreno_icd.aarch64.json") &&
             assetExists("turnip/libvulkan_freedreno.so")
         val icdPath = if (turnipAssetsBundled) prepareTurnipIcdPath() else null
 
+        val hasQualcommSignal = fingerprint.contains("qcom") ||
+            fingerprint.contains("qualcomm") ||
+            fingerprint.contains("msm") ||
+            Regex("\\bsm[0-9]{3,}\\b").containsMatchIn(fingerprint)
+
         return DriverReport(
-            adrenoDetected = isLikelyAdrenoDevice(),
+            adrenoDetected = fingerprint.contains("adreno") || hasQualcommSignal,
+            qualcommDetected = hasQualcommSignal,
+            vulkanSupported = isVulkanRuntimeSupported(),
             nativeBackendAvailable = nativeLibraryAvailable,
             turnipAssetsBundled = turnipAssetsBundled,
             turnipIcdPath = icdPath,
+            socManufacturer = socManufacturer,
+            socModel = socModel,
+            deviceHardware = Build.HARDWARE ?: "unknown",
+            buildDisplay = Build.DISPLAY ?: "unknown",
+            androidRelease = Build.VERSION.RELEASE ?: "unknown",
         )
     }
 
@@ -383,15 +407,17 @@ class GgufEngine @Inject constructor(
         }.getOrDefault(false)
     }
 
-    private fun isLikelyAdrenoDevice(): Boolean {
-        val socManufacturer = runCatching {
-            Build::class.java.getField("SOC_MANUFACTURER").get(null)?.toString()
+    private fun readSocField(fieldName: String): String? {
+        return runCatching {
+            Build::class.java.getField(fieldName).get(null)?.toString()
         }.getOrNull()
-        val socModel = runCatching {
-            Build::class.java.getField("SOC_MODEL").get(null)?.toString()
-        }.getOrNull()
+    }
 
-        val fingerprint = listOfNotNull(
+    private fun buildDeviceFingerprint(
+        socManufacturer: String?,
+        socModel: String?,
+    ): String {
+        return listOfNotNull(
             Build.HARDWARE,
             Build.BOARD,
             Build.DEVICE,
@@ -399,12 +425,12 @@ class GgufEngine @Inject constructor(
             socManufacturer,
             socModel,
         ).joinToString(separator = " ").lowercase()
+    }
 
-        return fingerprint.contains("adreno") ||
-            fingerprint.contains("qcom") ||
-            fingerprint.contains("qualcomm") ||
-            fingerprint.contains("msm") ||
-            Regex("\\bsm[0-9]{3,}\\b").containsMatchIn(fingerprint)
+    private fun isVulkanRuntimeSupported(): Boolean {
+        val pm = appContext.packageManager ?: return false
+        return pm.hasSystemFeature(PackageManager.FEATURE_VULKAN_HARDWARE_LEVEL) ||
+            pm.hasSystemFeature(PackageManager.FEATURE_VULKAN_HARDWARE_VERSION)
     }
 
     private fun buildFallbackResponse(prompt: String, maxTokens: Int): String {

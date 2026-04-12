@@ -187,6 +187,8 @@ data class HfModelInfo(
     val lastModified: String = "",
     val isPrivate: Boolean = false,
     val description: String = "",
+    val cardData: Map<String, String> = emptyMap(),
+    val modelCardUrl: String = "",
 )
 
 /**
