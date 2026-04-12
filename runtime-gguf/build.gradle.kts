@@ -15,6 +15,12 @@ android {
         ndk {
             abiFilters += listOf("arm64-v8a", "x86_64")
         }
+
+        externalNativeBuild {
+            cmake {
+                cppFlags += listOf("-std=c++20")
+            }
+        }
     }
 
     compileOptions {
@@ -26,12 +32,11 @@ android {
         jvmTarget = "17"
     }
 
-    // NDK / CMake will be configured when llama.cpp is integrated
-    // externalNativeBuild {
-    //     cmake {
-    //         path = file("src/main/cpp/CMakeLists.txt")
-    //     }
-    // }
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+        }
+    }
 }
 
 dependencies {
@@ -49,6 +54,7 @@ dependencies {
     implementation(libs.timber)
 
     // Testing
+    testImplementation("junit:junit:4.13.2")
     testImplementation(libs.junit5.api)
     testRuntimeOnly(libs.junit5.engine)
     testImplementation(libs.mockk)

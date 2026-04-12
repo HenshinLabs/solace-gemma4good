@@ -1,3 +1,35 @@
+import org.gradle.api.GradleException
+import org.gradle.api.DefaultTask
+import org.gradle.api.file.ConfigurableFileCollection
+import org.gradle.api.provider.ListProperty
+import org.gradle.api.tasks.Input
+import org.gradle.api.tasks.InputFiles
+import org.gradle.api.tasks.TaskAction
+import java.io.File
+
+abstract class VerifyTurnipAssetsTask : DefaultTask() {
+    @get:Input
+    abstract val requiredAssetPaths: ListProperty<String>
+
+    @get:InputFiles
+    abstract val requiredAssetFiles: ConfigurableFileCollection
+
+    @TaskAction
+    fun verify() {
+        val paths = requiredAssetPaths.get()
+        val files = requiredAssetFiles.files.toList()
+        val missing = paths.zip(files)
+            .filter { (_, file) -> !file.exists() || file.length() == 0L }
+            .map { (path, _) -> path }
+
+        if (missing.isNotEmpty()) {
+            throw GradleException(
+                "Turnip release bundle is incomplete. Missing assets: ${missing.joinToString()}"
+            )
+        }
+    }
+}
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -17,7 +49,7 @@ android {
         versionCode = 1
         versionName = "1.0.0"
 
-        testInstrumentationRunner = "com.masterllm.app.HiltTestRunner"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     buildTypes {
@@ -49,13 +81,11 @@ android {
 }
 
 dependencies {
-    // Core modules
     implementation(project(":core-data"))
     implementation(project(":core-domain"))
     implementation(project(":core-network"))
     implementation(project(":core-ui"))
 
-    // Feature modules
     implementation(project(":feature-auth"))
     implementation(project(":feature-marketplace"))
     implementation(project(":feature-model-manager"))
@@ -64,17 +94,14 @@ dependencies {
     implementation(project(":feature-roleplay"))
     implementation(project(":feature-settings"))
 
-    // Runtime modules
     implementation(project(":runtime-gguf"))
     implementation(project(":runtime-safetensors"))
     implementation(project(":runtime-imagegen"))
 
-    // AndroidX Core
     implementation(libs.core.ktx)
     implementation(libs.activity.compose)
     implementation(libs.lifecycle.runtime.compose)
 
-    // Compose
     implementation(platform(libs.compose.bom))
     implementation(libs.compose.ui)
     implementation(libs.compose.ui.graphics)
@@ -83,18 +110,14 @@ dependencies {
     debugImplementation(libs.compose.ui.tooling)
     debugImplementation(libs.compose.ui.test.manifest)
 
-    // Navigation
     implementation(libs.navigation.compose)
 
-    // Hilt
     implementation(libs.hilt.android)
     ksp(libs.hilt.compiler)
     implementation(libs.hilt.navigation.compose)
 
-    // Logging
     implementation(libs.timber)
 
-    // Testing
     testImplementation(libs.junit5.api)
     testRuntimeOnly(libs.junit5.engine)
     testImplementation(libs.mockk)
@@ -104,3 +127,20 @@ dependencies {
     androidTestImplementation(platform(libs.compose.bom))
     androidTestImplementation(libs.compose.ui.test.junit4)
 }
+
+val requiredTurnipAssetPaths = listOf(
+    "src/main/assets/turnip/icd.d/freedreno_icd.aarch64.json",
+    "src/main/assets/turnip/libvulkan_freedreno.so",
+)
+
+val verifyTurnipReleaseAssets by tasks.registering(VerifyTurnipAssetsTask::class) {
+    group = "verification"
+    description = "Ensures Turnip ICD and Vulkan vendor library are bundled for release builds."
+    requiredAssetPaths.set(requiredTurnipAssetPaths)
+    requiredAssetFiles.from(requiredTurnipAssetPaths.map { path -> File(project.projectDir, path) })
+}
+
+tasks.matching { it.name == "assembleRelease" || it.name == "bundleRelease" }
+    .configureEach {
+        dependsOn(verifyTurnipReleaseAssets)
+    }

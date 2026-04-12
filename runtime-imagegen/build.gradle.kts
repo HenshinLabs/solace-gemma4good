@@ -21,12 +21,11 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
-
-    // Chaquopy will be configured when diffusers integration is set up
 }
 
 dependencies {
     implementation(project(":core-domain"))
+    implementation(project(":runtime-safetensors"))
 
     // Hilt
     implementation(libs.hilt.android)

@@ -21,8 +21,6 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
-
-    // Chaquopy will be configured when Python integration is set up
 }
 
 dependencies {
