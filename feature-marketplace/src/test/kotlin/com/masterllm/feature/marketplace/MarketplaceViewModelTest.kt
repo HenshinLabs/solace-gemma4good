@@ -1,6 +1,8 @@
 package com.masterllm.feature.marketplace
 
+import android.app.ActivityManager
 import android.content.Context
+import android.content.pm.PackageManager
 import android.os.Environment
 import com.google.common.truth.Truth.assertThat
 import com.masterllm.core.domain.model.DownloadState
@@ -209,6 +211,49 @@ class MarketplaceViewModelTest {
         assertThat(File(stored!!.localPath!!).exists()).isTrue()
     }
 
+    @Test
+    fun pagination_loadsNextAndPreviousPages() = runTest(dispatcher) {
+        val modelRepository = InMemoryModelRepository()
+        val settingsRepository = InMemorySettingsRepository(token = "hf_test")
+        val api = FakeHuggingFaceApi().apply {
+            searchResponses["GGUF"] = emptyList()
+            pagedSearchResponses["llama" to 0] = List(20) { index ->
+                modelResponse(
+                    modelId = "repo/llama-page1-$index",
+                    siblings = listOf(HfSiblingResponse("page1-$index.Q4_K_M.gguf", 100L + index)),
+                )
+            }
+            pagedSearchResponses["llama" to 20] = listOf(
+                modelResponse(
+                    modelId = "repo/llama-page2",
+                    siblings = listOf(HfSiblingResponse("page2.Q4_K_M.gguf", 222L)),
+                )
+            )
+        }
+
+        val vm = createViewModel(modelRepository, settingsRepository, api)
+        advanceUntilIdle()
+
+        vm.onAction(MarketplaceAction.SearchQueryChanged("llama"))
+        vm.onAction(MarketplaceAction.Search)
+        advanceUntilIdle()
+
+        assertThat(vm.uiState.value.currentPage).isEqualTo(0)
+        assertThat(vm.uiState.value.hasNextPage).isTrue()
+        assertThat(vm.uiState.value.searchResults).isNotEmpty()
+
+        vm.onAction(MarketplaceAction.NextPage)
+        advanceUntilIdle()
+
+        assertThat(vm.uiState.value.currentPage).isEqualTo(1)
+        assertThat(vm.uiState.value.searchResults.first().modelId).isEqualTo("repo/llama-page2")
+
+        vm.onAction(MarketplaceAction.PreviousPage)
+        advanceUntilIdle()
+
+        assertThat(vm.uiState.value.currentPage).isEqualTo(0)
+    }
+
     private fun createViewModel(
         modelRepository: InMemoryModelRepository,
         settingsRepository: InMemorySettingsRepository,
@@ -217,8 +262,20 @@ class MarketplaceViewModelTest {
         val filesDir = createTempDir(prefix = "marketplace-test-")
         val externalDownloadsDir = File(filesDir, "external/downloads").apply { mkdirs() }
         val context = mockk<Context>()
+        val packageManager = mockk<PackageManager>()
+        val activityManager = mockk<ActivityManager>()
+
         every { context.filesDir } returns filesDir
         every { context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS) } returns externalDownloadsDir
+        every { context.packageManager } returns packageManager
+        every { packageManager.hasSystemFeature(any()) } returns false
+        every { context.getSystemService(Context.ACTIVITY_SERVICE) } returns activityManager
+        every { activityManager.getMemoryInfo(any()) } answers {
+            val info = firstArg<ActivityManager.MemoryInfo>()
+            info.totalMem = 8L * 1024L * 1024L * 1024L
+            info.availMem = 4L * 1024L * 1024L * 1024L
+            Unit
+        }
 
         return MarketplaceViewModel(
             modelRepository = modelRepository,
@@ -327,6 +384,7 @@ class MarketplaceViewModelTest {
 
     private class FakeHuggingFaceApi : HuggingFaceApi {
         val searchResponses = mutableMapOf<String, List<HfModelResponse>>()
+        val pagedSearchResponses = mutableMapOf<Pair<String, Int>, List<HfModelResponse>>()
         val modelInfos = mutableMapOf<String, HfModelResponse>()
         val downloadPayloads = mutableMapOf<String, ByteArray>()
         val searchQueries = mutableListOf<String>()
@@ -341,6 +399,7 @@ class MarketplaceViewModelTest {
             offset: Int,
         ): List<HfModelResponse> {
             searchQueries += query
+            pagedSearchResponses[query to offset]?.let { return it }
             return searchResponses[query] ?: emptyList()
         }
 

@@ -1,6 +1,9 @@
 package com.masterllm.feature.marketplace
 
+import android.app.ActivityManager
 import android.content.Context
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Environment
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -12,6 +15,8 @@ import com.masterllm.core.network.toBearerAuthHeader
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -20,23 +25,114 @@ import java.io.File
 import java.io.IOException
 import java.util.UUID
 import javax.inject.Inject
+import kotlin.math.roundToInt
+
+private const val PAGE_SIZE = 20
+private const val TASK_FILTER_ALL = "All tasks"
+private const val LIVE_SEARCH_DEBOUNCE_MS = 300L
+private const val PROGRESS_SAMPLE_INTERVAL_MS = 350L
+private const val BYTES_PER_GIB = 1024.0 * 1024.0 * 1024.0
+
+enum class MarketplaceSort(
+    val label: String,
+    val apiSort: String,
+    val apiDirection: String,
+) {
+    TRENDING("Trending", "likes", "-1"),
+    RECENT("Recently Updated", "lastModified", "-1"),
+    MOST_DOWNLOADED("Most Downloaded", "downloads", "-1"),
+}
+
+enum class ModelFormatFilter(val label: String) {
+    ANY("Any format"),
+    GGUF("GGUF"),
+    SAFETENSORS("SafeTensors"),
+    DIFFUSERS("Diffusers"),
+}
+
+enum class ParameterSizeFilter(val label: String) {
+    ANY("Any size"),
+    UP_TO_3B("<=3B"),
+    BETWEEN_3B_AND_8B("3B-8B"),
+    BETWEEN_8B_AND_20B("8B-20B"),
+    ABOVE_20B("20B+"),
+}
+
+enum class CompatibilityTier(val label: String) {
+    RECOMMENDED("Recommended"),
+    POSSIBLE("Possible"),
+    HEAVY("Heavy"),
+    UNKNOWN("Unknown"),
+}
+
+data class ModelCompatibility(
+    val tier: CompatibilityTier,
+    val reason: String,
+)
+
+data class DeviceProfile(
+    val totalRamGb: Int = 0,
+    val availableRamGb: Int = 0,
+    val cpuCores: Int = 0,
+    val gpuHint: String = "Unknown",
+    val vulkanSupported: Boolean = false,
+    val recommendedMaxParamsB: Double = 2.0,
+    val recommendationLabel: String = "Detecting device profile...",
+)
+
+data class DownloadTelemetry(
+    val key: String,
+    val modelId: String,
+    val fileName: String,
+    val progress: Float = 0f,
+    val bytesDownloaded: Long = 0L,
+    val totalBytes: Long? = null,
+    val speedBytesPerSec: Long = 0L,
+    val currentFileIndex: Int = 1,
+    val totalFiles: Int = 1,
+    val plannedFiles: List<String> = emptyList(),
+    val startedAtMs: Long = System.currentTimeMillis(),
+)
 
 data class MarketplaceUiState(
     val searchQuery: String = "",
+    val rawSearchResults: List<HfModelInfo> = emptyList(),
     val searchResults: List<HfModelInfo> = emptyList(),
     val downloadedModels: List<LlmModel> = emptyList(),
     val isSearching: Boolean = false,
+    val isSearchingLive: Boolean = false, // For showing search indicator while typing
     val isDownloading: Map<String, Float> = emptyMap(), // modelId → progress 0..1
+    val activeDownloads: Map<String, DownloadTelemetry> = emptyMap(),
+    val selectedSort: MarketplaceSort = MarketplaceSort.TRENDING,
+    val selectedFormatFilter: ModelFormatFilter = ModelFormatFilter.ANY,
+    val selectedSizeFilter: ParameterSizeFilter = ParameterSizeFilter.ANY,
+    val selectedTaskFilter: String = TASK_FILTER_ALL,
+    val availableTaskFilters: List<String> = listOf(TASK_FILTER_ALL),
+    val currentPage: Int = 0,
+    val hasNextPage: Boolean = false,
+    val totalResults: Int = 0, // Estimated total results from API
+    val pageSize: Int = PAGE_SIZE,
+    val deviceProfile: DeviceProfile = DeviceProfile(),
+    val compatibilityByModelId: Map<String, ModelCompatibility> = emptyMap(),
     val error: String? = null,
     val selectedTab: Int = 0, // 0=Browse, 1=Downloaded
     val selectedModelDetails: HfModelInfo? = null,
     val isLoadingModelDetails: Boolean = false,
     val modelDetailsError: String? = null,
+    val lastSearchResultsCount: Int = 0, // For displaying search status
 )
 
 sealed interface MarketplaceAction {
     data class SearchQueryChanged(val query: String) : MarketplaceAction
     data object Search : MarketplaceAction
+    data class SortChanged(val sort: MarketplaceSort) : MarketplaceAction
+    data class FormatFilterChanged(val filter: ModelFormatFilter) : MarketplaceAction
+    data class SizeFilterChanged(val filter: ParameterSizeFilter) : MarketplaceAction
+    data class TaskFilterChanged(val task: String) : MarketplaceAction
+    data object NextPage : MarketplaceAction
+    data object PreviousPage : MarketplaceAction
+    data object FirstPage : MarketplaceAction
+    data object LastPage : MarketplaceAction
     data class OpenModelDetails(val modelInfo: HfModelInfo) : MarketplaceAction
     data object CloseModelDetails : MarketplaceAction
     data object RefreshSelectedModelDetails : MarketplaceAction
@@ -57,8 +153,14 @@ class MarketplaceViewModel @Inject constructor(
 
     private val _uiState = MutableStateFlow(MarketplaceUiState())
     val uiState: StateFlow<MarketplaceUiState> = _uiState.asStateFlow()
+
+    private var liveSearchJob: Job? = null
+
     @Volatile
     private var modelStorageRootPath: String = ""
+
+    @Volatile
+    private var searchRequestCounter: Long = 0L
 
     init {
         // Watch downloaded models
@@ -72,15 +174,59 @@ class MarketplaceViewModel @Inject constructor(
                 modelStorageRootPath = path.trim()
             }
         }
-        // Load popular GGUF models on start
-        searchModels("GGUF")
+        refreshDeviceProfile()
+        _uiState.update { it.copy(searchQuery = "GGUF") }
+        searchModels("GGUF", resetPage = true)
     }
 
     fun onAction(action: MarketplaceAction) {
         when (action) {
-            is MarketplaceAction.SearchQueryChanged ->
-                _uiState.update { it.copy(searchQuery = action.query) }
-            MarketplaceAction.Search -> searchModels(_uiState.value.searchQuery)
+            is MarketplaceAction.SearchQueryChanged -> {
+                _uiState.update { it.copy(searchQuery = action.query, isSearchingLive = action.query.isNotEmpty()) }
+                scheduleLiveSearch(action.query)
+            }
+            MarketplaceAction.Search -> searchModels(_uiState.value.searchQuery, resetPage = true)
+            is MarketplaceAction.SortChanged -> {
+                _uiState.update { it.copy(selectedSort = action.sort) }
+                searchModels(_uiState.value.searchQuery, resetPage = true)
+            }
+            is MarketplaceAction.FormatFilterChanged -> {
+                _uiState.update { it.copy(selectedFormatFilter = action.filter) }
+                applyLocalFiltersToCurrentPage()
+            }
+            is MarketplaceAction.SizeFilterChanged -> {
+                _uiState.update { it.copy(selectedSizeFilter = action.filter) }
+                applyLocalFiltersToCurrentPage()
+            }
+            is MarketplaceAction.TaskFilterChanged -> {
+                _uiState.update { it.copy(selectedTaskFilter = action.task) }
+                applyLocalFiltersToCurrentPage()
+            }
+            MarketplaceAction.NextPage -> {
+                val state = _uiState.value
+                if (state.hasNextPage && !state.isSearching) {
+                    searchModels(state.searchQuery, requestedPage = state.currentPage + 1)
+                }
+            }
+            MarketplaceAction.PreviousPage -> {
+                val state = _uiState.value
+                if (state.currentPage > 0 && !state.isSearching) {
+                    searchModels(state.searchQuery, requestedPage = state.currentPage - 1)
+                }
+            }
+            MarketplaceAction.FirstPage -> {
+                val state = _uiState.value
+                if (!state.isSearching) {
+                    searchModels(state.searchQuery, requestedPage = 0)
+                }
+            }
+            MarketplaceAction.LastPage -> {
+                val state = _uiState.value
+                if (!state.isSearching && state.totalResults > 0) {
+                    val lastPage = (state.totalResults - 1) / state.pageSize
+                    searchModels(state.searchQuery, requestedPage = lastPage)
+                }
+            }
             is MarketplaceAction.OpenModelDetails -> openModelDetails(action.modelInfo)
             MarketplaceAction.CloseModelDetails -> {
                 _uiState.update {
@@ -105,23 +251,340 @@ class MarketplaceViewModel @Inject constructor(
         }
     }
 
-    private fun searchModels(query: String) {
-        if (query.isBlank()) return
+    private fun scheduleLiveSearch(query: String) {
+        liveSearchJob?.cancel()
+        liveSearchJob = viewModelScope.launch {
+            delay(LIVE_SEARCH_DEBOUNCE_MS)
+            searchModels(query, resetPage = true)
+        }
+    }
+
+    private fun searchModels(
+        query: String,
+        resetPage: Boolean = false,
+        requestedPage: Int? = null,
+    ) {
+        val targetPage = requestedPage ?: if (resetPage) 0 else _uiState.value.currentPage
+        val normalizedQuery = query.trim().ifBlank { "GGUF" }
+        val requestId = ++searchRequestCounter
+
         viewModelScope.launch {
-            _uiState.update { it.copy(isSearching = true, error = null) }
+            _uiState.update { it.copy(isSearching = true, isSearchingLive = false, error = null) }
             try {
+                val sort = _uiState.value.selectedSort
                 val results = huggingFaceApi.searchModels(
-                    query = query,
+                    query = normalizedQuery,
                     filter = null,
-                    limit = 20,
+                    sort = sort.apiSort,
+                    direction = sort.apiDirection,
+                    limit = PAGE_SIZE,
+                    offset = (targetPage.coerceAtLeast(0) * PAGE_SIZE),
                 )
+
+                if (requestId != searchRequestCounter) return@launch
+
                 val mapped = results.map(::mapModelResponse)
-                _uiState.update { it.copy(isSearching = false, searchResults = mapped) }
+                
+                // Estimate total results - Hugging Face API doesn't return total count
+                // We estimate based on whether we got a full page
+                val hasNext = results.size >= PAGE_SIZE
+                val estimatedTotal = if (hasNext) {
+                    // If we have more pages, estimate based on current page
+                    ((targetPage + 2) * PAGE_SIZE).coerceAtLeast(mapped.size)
+                } else {
+                    (targetPage * PAGE_SIZE) + mapped.size
+                }
+                
+                _uiState.update { current ->
+                    val taskFilters = buildTaskFilters(mapped)
+                    val selectedTask = current.selectedTaskFilter
+                        .takeIf { it in taskFilters }
+                        ?: TASK_FILTER_ALL
+
+                    val filtered = applyLocalFilters(
+                        models = mapped,
+                        taskFilter = selectedTask,
+                        formatFilter = current.selectedFormatFilter,
+                        sizeFilter = current.selectedSizeFilter,
+                    )
+
+                    current.copy(
+                        isSearching = false,
+                        isSearchingLive = false,
+                        rawSearchResults = mapped,
+                        searchResults = filtered,
+                        currentPage = targetPage.coerceAtLeast(0),
+                        hasNextPage = hasNext,
+                        totalResults = estimatedTotal,
+                        availableTaskFilters = taskFilters,
+                        selectedTaskFilter = selectedTask,
+                        compatibilityByModelId = computeCompatibilityMap(filtered, current.deviceProfile),
+                        lastSearchResultsCount = estimatedTotal,
+                    )
+                }
             } catch (e: Exception) {
+                if (requestId != searchRequestCounter) return@launch
                 _uiState.update {
-                    it.copy(isSearching = false, error = "Search failed: ${e.message}")
+                    it.copy(isSearching = false, isSearchingLive = false, error = "Search failed: ${e.message}")
                 }
             }
+        }
+    }
+
+    private fun applyLocalFiltersToCurrentPage() {
+        _uiState.update { current ->
+            val availableTasks = buildTaskFilters(current.rawSearchResults)
+            val selectedTask = current.selectedTaskFilter
+                .takeIf { it in availableTasks }
+                ?: TASK_FILTER_ALL
+            val filtered = applyLocalFilters(
+                models = current.rawSearchResults,
+                taskFilter = selectedTask,
+                formatFilter = current.selectedFormatFilter,
+                sizeFilter = current.selectedSizeFilter,
+            )
+
+            current.copy(
+                searchResults = filtered,
+                availableTaskFilters = availableTasks,
+                selectedTaskFilter = selectedTask,
+                compatibilityByModelId = computeCompatibilityMap(filtered, current.deviceProfile),
+            )
+        }
+    }
+
+    private fun buildTaskFilters(models: List<HfModelInfo>): List<String> {
+        val pipelineTags = models
+            .mapNotNull { model ->
+                model.pipelineTag
+                    .trim()
+                    .takeIf { it.isNotBlank() }
+            }
+            .distinct()
+            .sorted()
+        return listOf(TASK_FILTER_ALL) + pipelineTags
+    }
+
+    private fun applyLocalFilters(
+        models: List<HfModelInfo>,
+        taskFilter: String,
+        formatFilter: ModelFormatFilter,
+        sizeFilter: ParameterSizeFilter,
+    ): List<HfModelInfo> {
+        return models.filter { model ->
+            val taskMatch = taskFilter == TASK_FILTER_ALL || model.pipelineTag.equals(taskFilter, ignoreCase = true)
+            val formatMatch = when (formatFilter) {
+                ModelFormatFilter.ANY -> true
+                else -> inferModelFormats(model).contains(formatFilter)
+            }
+            val sizeMatch = when (sizeFilter) {
+                ParameterSizeFilter.ANY -> true
+                else -> {
+                    val paramsB = extractParamCountInBillions(model)
+                    if (paramsB == null) false else {
+                        when (sizeFilter) {
+                            ParameterSizeFilter.ANY -> true
+                            ParameterSizeFilter.UP_TO_3B -> paramsB <= 3.0
+                            ParameterSizeFilter.BETWEEN_3B_AND_8B -> paramsB > 3.0 && paramsB <= 8.0
+                            ParameterSizeFilter.BETWEEN_8B_AND_20B -> paramsB > 8.0 && paramsB <= 20.0
+                            ParameterSizeFilter.ABOVE_20B -> paramsB > 20.0
+                        }
+                    }
+                }
+            }
+
+            taskMatch && formatMatch && sizeMatch
+        }
+    }
+
+    private fun inferModelFormats(model: HfModelInfo): Set<ModelFormatFilter> {
+        val files = model.siblings.map { it.rfilename.lowercase() }
+        val hasGguf = files.any { it.endsWith(".gguf") }
+        val hasSafeTensors = files.any { it.endsWith(".safetensors") }
+        val hasDiffusersMarker = files.any { it == "model_index.json" || it.endsWith("/model_index.json") }
+
+        val formats = mutableSetOf<ModelFormatFilter>()
+        if (hasGguf) formats += ModelFormatFilter.GGUF
+        if (hasSafeTensors && hasDiffusersMarker) {
+            formats += ModelFormatFilter.DIFFUSERS
+        } else if (hasSafeTensors) {
+            formats += ModelFormatFilter.SAFETENSORS
+        }
+        return formats
+    }
+
+    private fun refreshDeviceProfile() {
+        val profile = runCatching { detectDeviceProfile() }.getOrElse {
+            DeviceProfile(recommendationLabel = "Unable to detect device profile")
+        }
+        _uiState.update { current ->
+            current.copy(
+                deviceProfile = profile,
+                compatibilityByModelId = computeCompatibilityMap(current.searchResults, profile),
+            )
+        }
+    }
+
+    private fun detectDeviceProfile(): DeviceProfile {
+        val activityManager = appContext.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+        val memoryInfo = ActivityManager.MemoryInfo().also { info ->
+            activityManager?.getMemoryInfo(info)
+        }
+
+        val totalRamGbRaw = memoryInfo.totalMem / BYTES_PER_GIB
+        val availableRamGbRaw = memoryInfo.availMem / BYTES_PER_GIB
+        val cpuCores = Runtime.getRuntime().availableProcessors().coerceAtLeast(1)
+        val vulkanSupported = isVulkanRuntimeSupported()
+        val gpuHint = detectGpuHint()
+
+        val recommendedMaxParams = recommendMaxParamsBudget(
+            totalRamGb = totalRamGbRaw,
+            cpuCores = cpuCores,
+            vulkanSupported = vulkanSupported,
+            gpuHint = gpuHint,
+        )
+
+        val recommendation = buildString {
+            append("Best target: <=")
+            append(formatParamBudget(recommendedMaxParams))
+            append(" models (Q4/Q5 GGUF)")
+        }
+
+        return DeviceProfile(
+            totalRamGb = totalRamGbRaw.roundToInt().coerceAtLeast(0),
+            availableRamGb = availableRamGbRaw.roundToInt().coerceAtLeast(0),
+            cpuCores = cpuCores,
+            gpuHint = gpuHint,
+            vulkanSupported = vulkanSupported,
+            recommendedMaxParamsB = recommendedMaxParams,
+            recommendationLabel = recommendation,
+        )
+    }
+
+    private fun detectGpuHint(): String {
+        val socManufacturer = readBuildField("SOC_MANUFACTURER")
+        val socModel = readBuildField("SOC_MODEL")
+        val fingerprint = listOfNotNull(
+            Build.HARDWARE,
+            Build.BOARD,
+            Build.DEVICE,
+            Build.PRODUCT,
+            socManufacturer,
+            socModel,
+        ).joinToString(separator = " ").lowercase()
+
+        return when {
+            fingerprint.contains("adreno") || fingerprint.contains("qcom") || fingerprint.contains("qualcomm") -> "Adreno / Qualcomm"
+            fingerprint.contains("mali") -> "Mali"
+            fingerprint.contains("xclipse") -> "Xclipse"
+            fingerprint.contains("powervr") -> "PowerVR"
+            else -> "Unknown"
+        }
+    }
+
+    private fun isVulkanRuntimeSupported(): Boolean {
+        val packageManager = appContext.packageManager ?: return false
+        return packageManager.hasSystemFeature(PackageManager.FEATURE_VULKAN_HARDWARE_LEVEL) ||
+            packageManager.hasSystemFeature(PackageManager.FEATURE_VULKAN_HARDWARE_VERSION)
+    }
+
+    private fun readBuildField(fieldName: String): String? {
+        return runCatching {
+            Build::class.java.getField(fieldName).get(null)?.toString()
+        }.getOrNull()
+    }
+
+    private fun recommendMaxParamsBudget(
+        totalRamGb: Double,
+        cpuCores: Int,
+        vulkanSupported: Boolean,
+        gpuHint: String,
+    ): Double {
+        var budget = when {
+            totalRamGb >= 14.0 -> 13.0
+            totalRamGb >= 10.0 -> 8.0
+            totalRamGb >= 8.0 -> 7.0
+            totalRamGb >= 6.0 -> 4.0
+            totalRamGb >= 4.0 -> 2.5
+            else -> 1.5
+        }
+
+        if (cpuCores < 6) budget *= 0.85
+        if (!vulkanSupported) budget *= 0.85
+        if (gpuHint.contains("Adreno", ignoreCase = true) && vulkanSupported) budget *= 1.1
+
+        return budget.coerceIn(1.0, 20.0)
+    }
+
+    private fun computeCompatibilityMap(
+        models: List<HfModelInfo>,
+        profile: DeviceProfile,
+    ): Map<String, ModelCompatibility> {
+        return models.associate { model ->
+            model.modelId to evaluateModelCompatibility(model, profile)
+        }
+    }
+
+    private fun evaluateModelCompatibility(
+        model: HfModelInfo,
+        profile: DeviceProfile,
+    ): ModelCompatibility {
+        val paramsB = extractParamCountInBillions(model)
+        val hasGguf = model.siblings.any { it.rfilename.endsWith(".gguf", ignoreCase = true) }
+        val target = profile.recommendedMaxParamsB
+
+        if (paramsB == null) {
+            return ModelCompatibility(
+                tier = CompatibilityTier.UNKNOWN,
+                reason = "No parameter hint in model metadata",
+            )
+        }
+
+        var tier = when {
+            paramsB <= target -> CompatibilityTier.RECOMMENDED
+            paramsB <= target * 1.35 -> CompatibilityTier.POSSIBLE
+            else -> CompatibilityTier.HEAVY
+        }
+
+        if (!hasGguf && tier == CompatibilityTier.RECOMMENDED) {
+            tier = CompatibilityTier.POSSIBLE
+        }
+
+        val reason = buildString {
+            append(formatParamBudget(paramsB))
+            append(" model vs ")
+            append(formatParamBudget(target))
+            append(" device target")
+            if (!hasGguf) {
+                append(" (no GGUF file detected)")
+            }
+        }
+
+        return ModelCompatibility(tier = tier, reason = reason)
+    }
+
+    private fun extractParamCountInBillions(modelInfo: HfModelInfo): Double? {
+        val searchSpace = buildString {
+            append(modelInfo.modelId)
+            append(' ')
+            append(modelInfo.tags.joinToString(" "))
+            append(' ')
+            append(modelInfo.cardData.values.joinToString(" "))
+        }
+
+        val regex = Regex("([0-9]+(?:\\.[0-9]+)?)\\s*[bB]\\b")
+        return regex.find(searchSpace)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.toDoubleOrNull()
+    }
+
+    private fun formatParamBudget(value: Double): String {
+        val rounded = (value * 10.0).roundToInt() / 10.0
+        return if (rounded % 1.0 == 0.0) {
+            "${rounded.toInt()}B"
+        } else {
+            "${rounded}B"
         }
     }
 
@@ -178,9 +641,13 @@ class MarketplaceViewModel @Inject constructor(
         viewModelScope.launch {
             if (_uiState.value.isDownloading.containsKey(downloadKey)) return@launch
 
-            _uiState.update {
-                it.copy(isDownloading = it.isDownloading + (downloadKey to 0f), error = null)
-            }
+            startDownloadTelemetry(
+                downloadKey = downloadKey,
+                modelId = modelInfo.modelId,
+                fileName = file.rfilename,
+                plannedFiles = listOf(file.rfilename),
+                totalFiles = 1,
+            )
 
             var localTargetFile: File? = null
             var persistedModelId: String? = null
@@ -226,7 +693,16 @@ class MarketplaceViewModel @Inject constructor(
 
                 val body = response.body() ?: throw IOException("Empty download body")
                 localTargetFile = buildModelOutputFile(modelInfo.modelId, file.rfilename)
-                writeToDiskWithProgress(downloadKey, body, localTargetFile)
+                writeToDiskWithProgress(
+                    downloadKey = downloadKey,
+                    modelId = modelInfo.modelId,
+                    fileName = file.rfilename,
+                    responseBody = body,
+                    targetFile = localTargetFile,
+                    plannedFiles = listOf(file.rfilename),
+                    currentFileIndex = 1,
+                    totalFiles = 1,
+                )
 
                 modelRepository.updateDownloadState(
                     model.id,
@@ -242,9 +718,7 @@ class MarketplaceViewModel @Inject constructor(
                     )
                 }
             } finally {
-                _uiState.update {
-                    it.copy(isDownloading = it.isDownloading - downloadKey)
-                }
+                finishDownloadTelemetry(downloadKey)
             }
         }
     }
@@ -253,10 +727,6 @@ class MarketplaceViewModel @Inject constructor(
         val downloadKey = "${modelInfo.modelId}/__diffusers_bundle__"
         viewModelScope.launch {
             if (_uiState.value.isDownloading.containsKey(downloadKey)) return@launch
-
-            _uiState.update {
-                it.copy(isDownloading = it.isDownloading + (downloadKey to 0f), error = null)
-            }
 
             var persistedModelId: String? = null
             var outputRoot: File? = null
@@ -269,6 +739,15 @@ class MarketplaceViewModel @Inject constructor(
                 require(filesToDownload.isNotEmpty()) {
                     "No Diffusers bundle files found for ${modelInfo.modelId}"
                 }
+                val plannedFiles = filesToDownload.map { it.rfilename }
+
+                startDownloadTelemetry(
+                    downloadKey = downloadKey,
+                    modelId = modelInfo.modelId,
+                    fileName = plannedFiles.first(),
+                    plannedFiles = plannedFiles,
+                    totalFiles = plannedFiles.size,
+                )
 
                 val modelId = "diff_${modelInfo.modelId.hashCode()}"
                 persistedModelId = modelId
@@ -309,8 +788,13 @@ class MarketplaceViewModel @Inject constructor(
 
                     writeToDiskWithProgress(
                         downloadKey = downloadKey,
+                        modelId = modelInfo.modelId,
+                        fileName = bundleFile.rfilename,
                         responseBody = body,
                         targetFile = targetFile,
+                        plannedFiles = plannedFiles,
+                        currentFileIndex = index + 1,
+                        totalFiles = totalFiles,
                         progressPrefix = index.toFloat() / totalFiles.toFloat(),
                         progressSpan = 1f / totalFiles.toFloat(),
                     )
@@ -326,8 +810,86 @@ class MarketplaceViewModel @Inject constructor(
                 persistedModelId?.let { modelRepository.updateDownloadState(it, DownloadState.FAILED, null) }
                 _uiState.update { it.copy(error = "Diffusers bundle download failed: ${e.message ?: "unknown error"}") }
             } finally {
-                _uiState.update { it.copy(isDownloading = it.isDownloading - downloadKey) }
+                finishDownloadTelemetry(downloadKey)
             }
+        }
+    }
+
+    private fun startDownloadTelemetry(
+        downloadKey: String,
+        modelId: String,
+        fileName: String,
+        plannedFiles: List<String>,
+        totalFiles: Int,
+    ) {
+        val now = System.currentTimeMillis()
+        val telemetry = DownloadTelemetry(
+            key = downloadKey,
+            modelId = modelId,
+            fileName = fileName,
+            progress = 0f,
+            bytesDownloaded = 0L,
+            totalBytes = null,
+            speedBytesPerSec = 0L,
+            currentFileIndex = 1,
+            totalFiles = totalFiles.coerceAtLeast(1),
+            plannedFiles = plannedFiles,
+            startedAtMs = now,
+        )
+        _uiState.update { current ->
+            current.copy(
+                isDownloading = current.isDownloading + (downloadKey to 0f),
+                activeDownloads = current.activeDownloads + (downloadKey to telemetry),
+                error = null,
+            )
+        }
+    }
+
+    private fun updateDownloadTelemetry(
+        downloadKey: String,
+        modelId: String,
+        fileName: String,
+        overallProgress: Float,
+        bytesDownloaded: Long,
+        totalBytes: Long?,
+        speedBytesPerSec: Long,
+        currentFileIndex: Int,
+        totalFiles: Int,
+        plannedFiles: List<String>,
+    ) {
+        _uiState.update { current ->
+            val existing = current.activeDownloads[downloadKey]
+            val telemetry = (existing ?: DownloadTelemetry(
+                key = downloadKey,
+                modelId = modelId,
+                fileName = fileName,
+                plannedFiles = plannedFiles,
+                totalFiles = totalFiles,
+            )).copy(
+                modelId = modelId,
+                fileName = fileName,
+                progress = overallProgress.coerceIn(0f, 1f),
+                bytesDownloaded = bytesDownloaded,
+                totalBytes = totalBytes,
+                speedBytesPerSec = speedBytesPerSec.coerceAtLeast(0L),
+                currentFileIndex = currentFileIndex.coerceIn(1, totalFiles.coerceAtLeast(1)),
+                totalFiles = totalFiles.coerceAtLeast(1),
+                plannedFiles = plannedFiles,
+            )
+
+            current.copy(
+                isDownloading = current.isDownloading + (downloadKey to telemetry.progress),
+                activeDownloads = current.activeDownloads + (downloadKey to telemetry),
+            )
+        }
+    }
+
+    private fun finishDownloadTelemetry(downloadKey: String) {
+        _uiState.update { current ->
+            current.copy(
+                isDownloading = current.isDownloading - downloadKey,
+                activeDownloads = current.activeDownloads - downloadKey,
+            )
         }
     }
 
@@ -419,13 +981,20 @@ class MarketplaceViewModel @Inject constructor(
 
     private suspend fun writeToDiskWithProgress(
         downloadKey: String,
+        modelId: String,
+        fileName: String,
         responseBody: ResponseBody,
         targetFile: File,
+        plannedFiles: List<String>,
+        currentFileIndex: Int,
+        totalFiles: Int,
         progressPrefix: Float = 0f,
         progressSpan: Float = 1f,
     ) = withContext(Dispatchers.IO) {
         val totalBytes = responseBody.contentLength().takeIf { it > 0L }
         var copiedBytes = 0L
+        var lastSampleTimeMs = System.currentTimeMillis()
+        var lastSampleBytes = 0L
 
         responseBody.byteStream().use { input ->
             targetFile.outputStream().use { output ->
@@ -436,17 +1005,53 @@ class MarketplaceViewModel @Inject constructor(
                     output.write(buffer, 0, read)
                     copiedBytes += read
 
-                    if (totalBytes != null) {
-                        val localProgress = (copiedBytes.toFloat() / totalBytes.toFloat()).coerceIn(0f, 1f)
-                        val progress = (progressPrefix + localProgress * progressSpan).coerceIn(0f, 1f)
-                        _uiState.update {
-                            it.copy(isDownloading = it.isDownloading + (downloadKey to progress))
-                        }
+                    val nowMs = System.currentTimeMillis()
+                    val localProgress = if (totalBytes != null) {
+                        (copiedBytes.toFloat() / totalBytes.toFloat()).coerceIn(0f, 1f)
+                    } else {
+                        0f
+                    }
+                    val overallProgress = (progressPrefix + localProgress * progressSpan).coerceIn(0f, 1f)
+
+                    val shouldSample = (nowMs - lastSampleTimeMs) >= PROGRESS_SAMPLE_INTERVAL_MS
+                    if (shouldSample) {
+                        val deltaBytes = copiedBytes - lastSampleBytes
+                        val deltaMs = (nowMs - lastSampleTimeMs).coerceAtLeast(1L)
+                        val speedBytesPerSec = (deltaBytes * 1000L) / deltaMs
+
+                        updateDownloadTelemetry(
+                            downloadKey = downloadKey,
+                            modelId = modelId,
+                            fileName = fileName,
+                            overallProgress = overallProgress,
+                            bytesDownloaded = copiedBytes,
+                            totalBytes = totalBytes,
+                            speedBytesPerSec = speedBytesPerSec,
+                            currentFileIndex = currentFileIndex,
+                            totalFiles = totalFiles,
+                            plannedFiles = plannedFiles,
+                        )
+
+                        lastSampleTimeMs = nowMs
+                        lastSampleBytes = copiedBytes
                     }
                 }
                 output.flush()
             }
         }
+
+        updateDownloadTelemetry(
+            downloadKey = downloadKey,
+            modelId = modelId,
+            fileName = fileName,
+            overallProgress = (progressPrefix + progressSpan).coerceIn(0f, 1f),
+            bytesDownloaded = copiedBytes,
+            totalBytes = totalBytes,
+            speedBytesPerSec = 0L,
+            currentFileIndex = currentFileIndex,
+            totalFiles = totalFiles,
+            plannedFiles = plannedFiles,
+        )
     }
 
     private fun deleteModel(id: String) {
