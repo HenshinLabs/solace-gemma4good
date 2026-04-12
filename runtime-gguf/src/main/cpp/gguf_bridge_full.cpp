@@ -188,7 +188,7 @@ Java_com_masterllm_runtime_gguf_GgufEngine_nativeLoadModel(
 
     const llama_vocab* vocab = llama_model_get_vocab(wrapper->model);
     LOGI("Model loaded: vocab=%d, ctx=%d, threads=%d, gpu_layers=%d",
-         llama_vocab_get_n_tokens(vocab), wrapper->n_ctx, wrapper->n_threads, wrapper->n_gpu_layers);
+         llama_vocab_n_tokens(vocab), wrapper->n_ctx, wrapper->n_threads, wrapper->n_gpu_layers);
 
     jlong handle = CreateHandle();
     AddContext(handle, std::move(wrapper));
@@ -269,11 +269,21 @@ Java_com_masterllm_runtime_gguf_GgufEngine_nativeGenerate(
     }
 
     // Evaluate prompt
-    if (llama_decode(ctx_wrapper->ctx, llama_batch_get_one(tokens.data(), tokens.size(), 0, 0)) != 0) {
+    llama_batch batch_prompt = llama_batch_init(tokens.size(), 0, 1);
+    batch_prompt.n_tokens = tokens.size();
+    for (size_t i = 0; i < tokens.size(); i++) {
+        batch_prompt.token[i] = tokens[i];
+        batch_prompt.pos[i] = i;
+        batch_prompt.n_seq_id[i] = 1;
+        batch_prompt.seq_id[i][0] = 0;
+    }
+    if (llama_decode(ctx_wrapper->ctx, batch_prompt) != 0) {
         LOGE("Failed to decode prompt");
+        llama_batch_free(batch_prompt);
         llama_sampler_free(sampler);
         return env->NewStringUTF("");
     }
+    llama_batch_free(batch_prompt);
 
     // Generate tokens
     std::string response;
@@ -281,6 +291,8 @@ Java_com_masterllm_runtime_gguf_GgufEngine_nativeGenerate(
 
     int n_gen = 0;
     const int n_max_gen = std::max(1, static_cast<int>(max_tokens));
+
+    llama_batch batch = llama_batch_init(1, 0, 1);
 
     while (n_gen < n_max_gen) {
         // Sample next token
@@ -298,14 +310,24 @@ Java_com_masterllm_runtime_gguf_GgufEngine_nativeGenerate(
             response.append(buf, n);
         }
 
+        // Prepare batch for next token
+        batch.n_tokens = 1;
+        batch.token[0] = token;
+        batch.pos[0] = tokens.size() + n_gen;
+        batch.n_seq_id[0] = 1;
+        batch.seq_id[0][0] = 0;
+        batch.logits[0] = 1;
+
         // Decode this token for next iteration
-        if (llama_decode(ctx_wrapper->ctx, llama_batch_get_one(&token, 1, tokens.size() + n_gen, 0)) != 0) {
+        if (llama_decode(ctx_wrapper->ctx, batch) != 0) {
             LOGE("Failed to decode token");
             break;
         }
 
         n_gen++;
     }
+
+    llama_batch_free(batch);
 
     llama_sampler_free(sampler);
 

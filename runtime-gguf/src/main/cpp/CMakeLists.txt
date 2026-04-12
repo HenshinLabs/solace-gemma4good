@@ -5,8 +5,9 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-# For now, use minimal implementation
-# Full llama.cpp integration with FetchContent requires network
+# For now, use the working stub implementation
+# Full llama.cpp integration requires API version alignment
+# See gguf_bridge_full.cpp for reference implementation
 
 add_library(
     llama_android
