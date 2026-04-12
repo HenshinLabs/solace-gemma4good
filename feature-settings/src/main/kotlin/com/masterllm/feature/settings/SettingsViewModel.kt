@@ -198,40 +198,23 @@ class SettingsViewModel @Inject constructor(
 		}
 	}
 
-	private fun refreshGpuDriverStatus() {
-		val driverReport = ggufEngine.getDriverReport()
-		val loadedInfo = ggufEngine.getLoadedModelInfo()
+private fun refreshGpuDriverStatus() {
+        val isModelLoaded = ggufEngine.isModelLoaded()
 
-		val backendLabel = when {
-			loadedInfo == null -> "Idle"
-			loadedInfo.nativeBackend && loadedInfo.gpuLayers > 0 -> "GPU"
-			loadedInfo.nativeBackend -> "CPU native"
-			else -> "CPU fallback"
-		}
+        val backendLabel = when {
+            isModelLoaded -> "CPU native"
+            else -> "Idle"
+        }
 
-		val headline = when {
-			driverReport.adrenoDetected &&
-				driverReport.vulkanSupported &&
-				driverReport.turnipAssetsBundled &&
-				driverReport.nativeBackendAvailable ->
-				"GPU acceleration ready (Adreno + Turnip + native backend)"
-			driverReport.adrenoDetected && driverReport.vulkanSupported ->
-				"Adreno detected, using system Vulkan/native path"
-			driverReport.qualcommDetected ->
-				"Qualcomm device detected, GPU fallback checks active"
-			driverReport.vulkanSupported ->
-				"Vulkan runtime available (non-Adreno profile)"
-			else ->
-				"CPU-safe mode (Vulkan or GPU path not confirmed)"
-		}
+        val headline = when {
+            isModelLoaded -> "Native backend loaded and ready"
+            else -> "Load a model to start inference"
+        }
 
-		val checks = listOf(
-			"Adreno signal: ${if (driverReport.adrenoDetected) "detected" else "not detected"}",
-			"Qualcomm signal: ${if (driverReport.qualcommDetected) "detected" else "not detected"}",
-			"Vulkan runtime: ${if (driverReport.vulkanSupported) "available" else "not reported"}",
-			"Turnip assets: ${if (driverReport.turnipAssetsBundled) "bundled" else "missing"}",
-			"Native backend: ${if (driverReport.nativeBackendAvailable) "loaded" else "missing"}",
-			"Turnip ICD path: ${driverReport.turnipIcdPath ?: "not prepared"}",
+        val checks = listOf(
+            "Native backend: ${if (isModelLoaded) "loaded" else "not loaded"}",
+            "Model status: ${if (isModelLoaded) "active" else "idle"}",
+            "Thread count: ${_uiState.value.threadCount}",
 		)
 
 		val details = buildString {

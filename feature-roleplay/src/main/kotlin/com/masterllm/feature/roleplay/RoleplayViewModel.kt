@@ -111,13 +111,14 @@ class RoleplayViewModel @Inject constructor(
                 settingsRepository.getGpuAccelerationEnabled(),
             ) { threadCount, gpuEnabled -> threadCount to gpuEnabled }
                 .collect { (threadCount, gpuEnabled) ->
-                    val config = ggufEngine.getRuntimeConfig()
-                    ggufEngine.updateRuntimeConfig(
-                        config.copy(
-                            threadCount = threadCount.coerceAtLeast(1),
-                            enableGpuOffload = gpuEnabled,
+                    // Thread count is now passed directly to load()
+                    _uiState.update { state ->
+                        state.copy(
+                            inferenceParams = state.inferenceParams.copy(
+                                numThreads = threadCount.coerceAtLeast(1)
+                            )
                         )
-                    )
+                    }
                 }
         }
     }
@@ -269,18 +270,36 @@ private fun updateInferenceParams(update: (InferenceParams) -> InferenceParams) 
 
             _uiState.update { it.copy(isGenerating = true, streamingText = "") }
 
-            try {
-                ensureEngineReady(session)
-                    ?: throw IllegalStateException("Download a GGUF model in Marketplace before roleplaying.")
+try {
+            ensureEngineReady(session)
+                ?: throw IllegalStateException("Download a GGUF model in Marketplace before roleplaying.")
 
-                val prompt = buildRoleplayPrompt(session, text)
-                val builder = StringBuilder()
+            // Add user message to engine
+            ggufEngine.addUserMessage(text)
+            
+            val builder = StringBuilder()
 
-                ggufEngine.generate(prompt, _uiState.value.inferenceParams).collect { token ->
-                    if (!_uiState.value.isGenerating) throw CancellationException("Generation stopped")
-                    builder.append(token)
-                    _uiState.update { it.copy(streamingText = builder.toString()) }
-                }
+            // Generate response using new API
+            ggufEngine.getResponseAsFlow(text).collect { piece ->
+                if (!_uiState.value.isGenerating) throw CancellationException("Generation stopped")
+                builder.append(piece)
+                _uiState.update { it.copy(streamingText = builder.toString()) }
+            }
+
+            val finalText = builder.toString().trim()
+            if (finalText.isNotEmpty()) {
+                // Add assistant response to engine
+                ggufEngine.addAssistantMessage(finalText)
+                
+                val aiMsg = Message(
+                    id = UUID.randomUUID().toString(),
+                    conversationId = session.conversationId,
+                    role = MessageRole.ASSISTANT,
+                    content = finalText,
+                )
+                conversationRepository.addMessage(aiMsg)
+            }
+        }
 
                 val finalText = builder.toString().trim()
                 if (finalText.isNotEmpty()) {
@@ -335,13 +354,26 @@ private fun updateInferenceParams(update: (InferenceParams) -> InferenceParams) 
             )
         }
 
-        if (loadedModelId != model.id || !ggufEngine.isModelLoaded()) {
-            val path = model.localPath ?: "/data/models/${model.fileName}"
-            ggufEngine.loadModel(path).getOrElse { throw it }
-            loadedModelId = model.id
-        }
-        return model.id
+if (loadedModelId != model.id || !ggufEngine.isModelLoaded()) {
+        val path = model.localPath ?: "/data/models/${model.fileName}"
+        val params = _uiState.value.inferenceParams
+        ggufEngine.load(
+            modelPath = path,
+            params = com.masterllm.runtime.gguf.InferenceParams(
+                minP = params.minP,
+                temperature = params.temperature,
+                storeChats = params.storeChats,
+                contextSize = params.contextSize?.toLong() ?: 2048L,
+                chatTemplate = params.systemPrompt,
+                numThreads = params.numThreads,
+                useMmap = true,
+                useMlock = false
+            )
+        )
+        loadedModelId = model.id
     }
+    return model.id
+}
 
     private fun buildRoleplayPrompt(session: RoleplaySession, userText: String): String {
         val history = _uiState.value.messages

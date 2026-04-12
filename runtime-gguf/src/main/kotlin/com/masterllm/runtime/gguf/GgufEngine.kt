@@ -1,569 +1,293 @@
 package com.masterllm.runtime.gguf
 
 import android.content.Context
-import android.content.pm.PackageManager
 import android.os.Build
-import com.masterllm.core.domain.model.InferenceParams
+import android.util.Log
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.channels.awaitClose
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.flow
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.FileNotFoundException
 import javax.inject.Inject
 import javax.inject.Singleton
-import timber.log.Timber
 
-/**
- * Engine for loading and running GGUF format models via llama.cpp JNI.
- *
- * The engine prefers native token streaming through `libllama_android.so` and
- * falls back to a multicore CPU response path only when the native backend is
- * unavailable at runtime.
- */
 @Singleton
 class GgufEngine @Inject constructor(
     @ApplicationContext private val appContext: Context,
 ) {
-
     companion object {
-        private val NATIVE_LIBRARY_CANDIDATES = listOf("llama_android", "llama")
-
-        @Volatile
-        private var nativeLibraryChecked: Boolean = false
-
-        @Volatile
-        private var nativeLibraryAvailable: Boolean = false
-    }
-
-    data class RuntimeConfig(
-        val threadCount: Int = Runtime.getRuntime().availableProcessors().coerceAtLeast(2),
-        val enableGpuOffload: Boolean = true,
-        val defaultGpuLayers: Int = 32,
-        val preferTurnipDriver: Boolean = true,
-        val streamDelayMs: Long = 12L,
-    )
-
-    data class LoadedModelInfo(
-        val path: String,
-        val fileSizeBytes: Long,
-        val ggufVersion: Int,
-        val tensorCount: Long,
-        val metadataKvCount: Long,
-        val contextSize: Int,
-        val threadCount: Int,
-        val gpuLayers: Int,
-        val nativeBackend: Boolean,
-    )
-
-    data class DriverReport(
-        val adrenoDetected: Boolean,
-        val qualcommDetected: Boolean,
-        val vulkanSupported: Boolean,
-        val nativeBackendAvailable: Boolean,
-        val turnipAssetsBundled: Boolean,
-        val turnipIcdPath: String?,
-        val socManufacturer: String?,
-        val socModel: String?,
-        val deviceHardware: String,
-        val buildDisplay: String,
-        val androidRelease: String,
-    )
-
-    private var modelPath: String? = null
-    private var isLoaded: Boolean = false
-    private var nativeContextPtr: Long = 0L
-    private var runtimeConfig: RuntimeConfig = RuntimeConfig()
-    private var loadedModelInfo: LoadedModelInfo? = null
-
-    /**
-     * Returns true when the JNI native library is loaded.
-     */
-    fun isNativeAvailable(): Boolean {
-        ensureNativeLibraryLoaded()
-        return nativeLibraryAvailable
-    }
-
-    /**
-     * Returns true when a model is loaded and ready for inference.
-     */
-    fun isModelLoaded(): Boolean = isLoaded
-
-    fun getLoadedModelInfo(): LoadedModelInfo? = loadedModelInfo
-
-    fun getDriverReport(): DriverReport {
-        ensureNativeLibraryLoaded()
-
-        val socManufacturer = readSocField("SOC_MANUFACTURER")
-        val socModel = readSocField("SOC_MODEL")
-        val fingerprint = buildDeviceFingerprint(socManufacturer, socModel)
-
-        val turnipAssetsBundled = assetExists("turnip/icd.d/freedreno_icd.aarch64.json") &&
-            assetExists("turnip/libvulkan_freedreno.so")
-        val icdPath = if (turnipAssetsBundled) prepareTurnipIcdPath() else null
-
-        val hasQualcommSignal = fingerprint.contains("qcom") ||
-            fingerprint.contains("qualcomm") ||
-            fingerprint.contains("msm") ||
-            Regex("\\bsm[0-9]{3,}\\b").containsMatchIn(fingerprint)
-
-        return DriverReport(
-            adrenoDetected = fingerprint.contains("adreno") || hasQualcommSignal,
-            qualcommDetected = hasQualcommSignal,
-            vulkanSupported = isVulkanRuntimeSupported(),
-            nativeBackendAvailable = nativeLibraryAvailable,
-            turnipAssetsBundled = turnipAssetsBundled,
-            turnipIcdPath = icdPath,
-            socManufacturer = socManufacturer,
-            socModel = socModel,
-            deviceHardware = Build.HARDWARE ?: "unknown",
-            buildDisplay = Build.DISPLAY ?: "unknown",
-            androidRelease = Build.VERSION.RELEASE ?: "unknown",
-        )
-    }
-
-    fun getRuntimeConfig(): RuntimeConfig = runtimeConfig
-
-    fun updateRuntimeConfig(config: RuntimeConfig) {
-        runtimeConfig = config.copy(threadCount = config.threadCount.coerceAtLeast(1))
-    }
-
-    /**
-     * Load a GGUF model from disk.
-     * @param path Absolute path to the .gguf file
-     * @param threadCount Number of threads to use (default 4)
-     * @param gpuLayers Number of layers to offload to GPU (0 = CPU only)
-     */
-    suspend fun loadModel(
-        path: String,
-        threadCount: Int = runtimeConfig.threadCount,
-        gpuLayers: Int = if (runtimeConfig.enableGpuOffload) runtimeConfig.defaultGpuLayers else 0,
-        contextSize: Int = 4096,
-    ): Result<Unit> {
-        return try {
-            val modelFile = File(path)
-            require(modelFile.exists() && modelFile.isFile) {
-                "GGUF file does not exist: $path"
-            }
-
-            val header = withContext(Dispatchers.IO) { GgufHeaderParser.parse(modelFile) }
-            val normalizedThreads = threadCount.coerceAtLeast(1)
-            val normalizedContext = contextSize.coerceAtLeast(1024)
-
-            val effectiveIcdPath =
-                if (runtimeConfig.preferTurnipDriver && gpuLayers > 0) prepareTurnipIcdPath()
-                else null
-
-            ensureNativeLibraryLoaded()
-            if (nativeLibraryAvailable && effectiveIcdPath != null) {
-                runCatching {
-                    nativeSetEnv("VK_ICD_FILENAMES", effectiveIcdPath)
-                }.onFailure {
-                    Timber.w(it, "GgufEngine: Unable to export VK_ICD_FILENAMES for Turnip")
-                }
-            }
-
-            val nativePtr = if (nativeLibraryAvailable) {
-                runCatching {
-                    nativeLoadModel(
-                        modelPath = modelFile.absolutePath,
-                        threadCount = normalizedThreads,
-                        gpuLayers = gpuLayers.coerceAtLeast(0),
-                        contextSize = normalizedContext,
-                    )
-                }.getOrElse {
-                    Timber.w(it, "GgufEngine: Native GGUF load failed, using CPU fallback")
-                    0L
-                }
-            } else {
-                0L
-            }
-
-            Timber.i(
-                "GgufEngine: Loaded ${modelFile.name} (v=${header.version}, tensors=${header.tensorCount}, " +
-                    "kv=${header.metadataKvCount}, threads=$normalizedThreads, gpuLayers=$gpuLayers, native=${nativePtr != 0L})"
-            )
-
-            modelPath = modelFile.absolutePath
-            nativeContextPtr = nativePtr
-            isLoaded = true
-            loadedModelInfo = LoadedModelInfo(
-                path = modelFile.absolutePath,
-                fileSizeBytes = modelFile.length(),
-                ggufVersion = header.version,
-                tensorCount = header.tensorCount,
-                metadataKvCount = header.metadataKvCount,
-                contextSize = normalizedContext,
-                threadCount = normalizedThreads,
-                gpuLayers = gpuLayers.coerceAtLeast(0),
-                nativeBackend = nativePtr != 0L,
-            )
-            Result.success(Unit)
-        } catch (e: Exception) {
-            Timber.e(e, "GgufEngine: Failed to load model")
-            isLoaded = false
-            nativeContextPtr = 0L
-            loadedModelInfo = null
-            Result.failure(e)
-        }
-    }
-
-    /**
-     * Unload the current model and free memory.
-     */
-    fun unloadModel() {
-        Timber.i("GgufEngine: Unloading model")
-        if (nativeContextPtr != 0L && nativeLibraryAvailable) {
-            runCatching { nativeUnloadModel(nativeContextPtr) }
-                .onFailure { Timber.w(it, "GgufEngine: Native unload failed") }
-        }
-        isLoaded = false
-        modelPath = null
-        nativeContextPtr = 0L
-        loadedModelInfo = null
-    }
-
-    /**
-     * Run inference on the loaded model, streaming tokens.
-     *
-     * @param prompt The full formatted prompt (including system + history)
-     * @param params Inference generation parameters
-     * @return Flow of generated text tokens
-     */
-    fun generate(
-        prompt: String,
-        params: InferenceParams = InferenceParams(),
-    ): Flow<String> = callbackFlow {
-        if (!isLoaded) {
-            throw IllegalStateException("No model loaded. Call loadModel() first.")
-        }
-
-        val modelInfo = loadedModelInfo
-        val delayMs = runtimeConfig.streamDelayMs.coerceAtLeast(0L)
-        Timber.d(
-            "GgufEngine: Starting generation (temp=${params.temperature}, maxTokens=${params.maxTokens}, " +
-                "threads=${modelInfo?.threadCount ?: runtimeConfig.threadCount})"
-        )
-
-        if (isNativeAvailable() && nativeContextPtr != 0L) {
-            val streamingSucceeded = runCatching {
-                var emittedAnyToken = false
-                val completed = nativeGenerateTokens(
-                    contextPtr = nativeContextPtr,
-                    prompt = prompt,
-                    temperature = params.temperature,
-                    topP = params.topP,
-                    topK = params.topK,
-                    repeatPenalty = params.repeatPenalty,
-                    maxTokens = params.maxTokens,
-                    callback = object : TokenCallback {
-                        override fun onToken(token: String) {
-                            if (token.isBlank()) return
-                            emittedAnyToken = true
-                            trySend("$token ")
+        init {
+            val logTag = GgufEngine::class.java.simpleName
+            
+            // Check CPU features and load appropriate library
+            val cpuFeatures = getCPUFeatures()
+            val hasFp16 = cpuFeatures.contains("fp16") || cpuFeatures.contains("fphp")
+            val hasDotProd = cpuFeatures.contains("dotprod") || cpuFeatures.contains("asimddp")
+            val hasSve = cpuFeatures.contains("sve")
+            val hasI8mm = cpuFeatures.contains("i8mm")
+            val isAtLeastArmV82 = cpuFeatures.contains("asimd") && 
+                                 cpuFeatures.contains("crc32") && 
+                                 cpuFeatures.contains("aes")
+            val isAtLeastArmV84 = cpuFeatures.contains("dcpop") && 
+                                 cpuFeatures.contains("uscat")
+            
+            Log.d(logTag, "CPU features: $cpuFeatures")
+            
+            // Check if running on emulator
+            val isEmulated = (Build.HARDWARE.contains("goldfish") || 
+                           Build.HARDWARE.contains("ranchu"))
+            
+            Log.d(logTag, "isEmulated: $isEmulated")
+            
+            if (!isEmulated) {
+                if (supportsArm64V8a()) {
+                    when {
+                        isAtLeastArmV84 && hasSve && hasI8mm && hasFp16 && hasDotProd -> {
+                            Log.d(logTag, "Loading libllama_android_v8_4_fp16_dotprod_i8mm_sve.so")
+                            System.loadLibrary("llama_android_v8_4_fp16_dotprod_i8mm_sve")
                         }
-                    },
-                )
-                completed && emittedAnyToken
-            }.onFailure {
-                Timber.w(it, "GgufEngine: Native token streaming failed, falling back to CPU path")
-            }.getOrDefault(false)
-
-            if (streamingSucceeded) {
-                close()
-                return@callbackFlow
-            }
-
-            val nativeText = runCatching {
-                nativeGenerate(
-                    contextPtr = nativeContextPtr,
-                    prompt = prompt,
-                    temperature = params.temperature,
-                    topP = params.topP,
-                    topK = params.topK,
-                    repeatPenalty = params.repeatPenalty,
-                    maxTokens = params.maxTokens,
-                )
-            }.onFailure {
-                Timber.w(it, "GgufEngine: Native generation failed, falling back to multicore CPU path")
-            }.getOrNull()
-
-            if (!nativeText.isNullOrBlank()) {
-                val chunks = nativeText.split(' ').filter { it.isNotBlank() }
-                for (chunk in chunks) {
-                    trySend("$chunk ")
-                    if (delayMs > 0) delay(delayMs)
+                        isAtLeastArmV84 && hasSve && hasFp16 && hasDotProd -> {
+                            Log.d(logTag, "Loading libllama_android_v8_4_fp16_dotprod_sve.so")
+                            System.loadLibrary("llama_android_v8_4_fp16_dotprod_sve")
+                        }
+                        isAtLeastArmV84 && hasI8mm && hasFp16 && hasDotProd -> {
+                            Log.d(logTag, "Loading libllama_android_v8_4_fp16_dotprod_i8mm.so")
+                            System.loadLibrary("llama_android_v8_4_fp16_dotprod_i8mm")
+                        }
+                        isAtLeastArmV84 && hasFp16 && hasDotProd -> {
+                            Log.d(logTag, "Loading libllama_android_v8_4_fp16_dotprod.so")
+                            System.loadLibrary("llama_android_v8_4_fp16_dotprod")
+                        }
+                        isAtLeastArmV82 && hasFp16 && hasDotProd -> {
+                            Log.d(logTag, "Loading libllama_android_v8_2_fp16_dotprod.so")
+                            System.loadLibrary("llama_android_v8_2_fp16_dotprod")
+                        }
+                        isAtLeastArmV82 && hasFp16 -> {
+                            Log.d(logTag, "Loading libllama_android_v8_2_fp16.so")
+                            System.loadLibrary("llama_android_v8_2_fp16")
+                        }
+                        else -> {
+                            Log.d(logTag, "Loading libllama_android.so")
+                            System.loadLibrary("llama_android")
+                        }
+                    }
+                } else {
+                    Log.d(logTag, "Loading default libllama_android.so")
+                    System.loadLibrary("llama_android")
                 }
-                close()
-                return@callbackFlow
-            }
-        }
-
-        launch {
-            // CPU fallback for environments without the llama.cpp JNI runtime.
-            val fallback = withContext(
-                Dispatchers.Default.limitedParallelism(
-                    (modelInfo?.threadCount ?: runtimeConfig.threadCount).coerceAtLeast(1)
-                )
-            ) {
-                buildFallbackResponse(prompt = prompt, maxTokens = params.maxTokens)
-            }
-
-            val words = fallback.split(' ').filter { it.isNotBlank() }
-            for (word in words) {
-                trySend("$word ")
-                if (delayMs > 0) delay(delayMs)
-            }
-            close()
-        }
-
-        awaitClose { }
-    }
-
-    /**
-     * Best-effort metadata-only context estimate until full tokenizer integration is in place.
-     */
-    fun getContextSize(): Int = loadedModelInfo?.contextSize ?: 4096
-
-    /**
-     * Estimate token count for a string using native tokenizer if available.
-     */
-    fun estimateTokenCount(text: String): Int {
-        if (!isNativeAvailable() || nativeContextPtr == 0L) {
-            // Fallback estimation
-            val whitespaceTokens = text.trim().split(Regex("\\s+")).count { it.isNotBlank() }
-            if (whitespaceTokens > 0) return whitespaceTokens
-            return (text.length / 4).coerceAtLeast(1)
-        }
-        return runCatching {
-            nativeTokenize(nativeContextPtr, text, null)
-        }.getOrDefault(
-            text.trim().split(Regex("\\s+")).count { it.isNotBlank() }
-        )
-    }
-
-    /**
-     * Clear the KV cache to free memory and reset generation state.
-     */
-    fun clearKVCache() {
-        if (isNativeAvailable() && nativeContextPtr != 0L) {
-            runCatching { nativeClearKVCache(nativeContextPtr) }
-                .onFailure { Timber.w(it, "GgufEngine: Failed to clear KV cache") }
-        }
-    }
-
-    /**
-     * Get the vocabulary size of the loaded model.
-     */
-    fun getVocabSize(): Int {
-        if (!isNativeAvailable() || nativeContextPtr == 0L) return 0
-        return runCatching { nativeGetVocabSize(nativeContextPtr) }.getOrDefault(0)
-    }
-
-    /**
-     * Tokenize text into token IDs.
-     * @return Number of tokens, or -1 on error
-     */
-    fun tokenize(text: String): List<Int> {
-        if (!isNativeAvailable() || nativeContextPtr == 0L || text.isEmpty()) return emptyList()
-
-        return runCatching {
-            val maxTokens = (text.length + 16).coerceAtMost(32768)
-            val tokenArray = IntArray(maxTokens)
-            val nTokens = nativeTokenize(nativeContextPtr, text, tokenArray)
-            if (nTokens > 0) {
-                tokenArray.take(nTokens).toList()
             } else {
-                emptyList()
+                Log.d(logTag, "Loading default libllama_android.so (emulator)")
+                System.loadLibrary("llama_android")
             }
-        }.getOrDefault(emptyList())
-    }
-
-    private fun ensureNativeLibraryLoaded() {
-        if (nativeLibraryChecked) return
-        synchronized(this) {
-            if (nativeLibraryChecked) return
-            nativeLibraryAvailable = NATIVE_LIBRARY_CANDIDATES.any { libName ->
-                runCatching { System.loadLibrary(libName) }.isSuccess
-            }
-            nativeLibraryChecked = true
-            Timber.i("GgufEngine: Native llama backend available = $nativeLibraryAvailable")
         }
-    }
-
-    private fun prepareTurnipIcdPath(): String? {
-        val turnipRoot = File(appContext.filesDir, "turnip")
-        val icdFile = File(turnipRoot, "icd.d/freedreno_icd.aarch64.json")
-        val libraryFile = File(turnipRoot, "libvulkan_freedreno.so")
-
-        copyAssetIfExists("turnip/icd.d/freedreno_icd.aarch64.json", icdFile)
-        copyAssetIfExists("turnip/libvulkan_freedreno.so", libraryFile)
-
-        if (!icdFile.exists() || !libraryFile.exists()) {
-            return null
-        }
-
-        return rewriteIcdWithAbsoluteLibraryPath(icdFile, libraryFile)?.absolutePath
-            ?: icdFile.absolutePath
-    }
-
-    private fun rewriteIcdWithAbsoluteLibraryPath(icdFile: File, libraryFile: File): File? {
-        return runCatching {
-            val original = icdFile.readText()
-            val normalizedLibraryPath = libraryFile.absolutePath.replace("\\", "\\\\")
-            val patchedContent = original.replace(
-                "libvulkan_freedreno.so",
-                normalizedLibraryPath,
-            )
-            if (patchedContent == original) {
-                return@runCatching icdFile
+        
+        private fun getCPUFeatures(): String {
+            return try {
+                File("/proc/cpuinfo").readText()
+                    .substringAfter("Features")
+                    .substringAfter(":")
+                    .substringBefore("\n")
+                    .trim()
+            } catch (e: FileNotFoundException) {
+                ""
             }
-
-            val patchedIcd = File(icdFile.parentFile, "freedreno_runtime_icd.json")
-            patchedIcd.writeText(patchedContent)
-            patchedIcd
-        }.onFailure {
-            Timber.w(it, "GgufEngine: Unable to patch Turnip ICD path")
-        }.getOrNull()
-    }
-
-    private fun copyAssetIfExists(assetPath: String, target: File) {
-        if (target.exists() && target.length() > 0L) return
-        runCatching {
-            target.parentFile?.mkdirs()
-            appContext.assets.open(assetPath).use { input ->
-                target.outputStream().use { output -> input.copyTo(output) }
-            }
-        }.onFailure {
-            // Assets are optional; app should continue without packaged Turnip blobs.
-            Timber.d("GgufEngine: Optional asset missing $assetPath")
         }
+        
+        private fun supportsArm64V8a(): Boolean = 
+            Build.SUPPORTED_ABIS[0]?.equals("arm64-v8a") == true
+            
+        const val DEFAULT_CONTEXT_SIZE: Long = 2048L
+        const val DEFAULT_CHAT_TEMPLATE = "{% for message in messages %}{% if loop.first and messages[0]['role'] != 'system' %}{{ '<|im_start|>system\\nYou are a helpful AI assistant.\\n<|im_end|>\\n' }}{% endif %}{{'<|im_start|>' + message['role'] + '\\n' + message['content'] + '<|im_end|>\\n'}}{% endfor %}{% if add_generation_prompt %}{{ '<|im_start|>assistant\\n' }}{% endif %}"
     }
-
-    private fun assetExists(assetPath: String): Boolean {
-        return runCatching {
-            appContext.assets.open(assetPath).use { }
-            true
-        }.getOrDefault(false)
-    }
-
-    private fun readSocField(fieldName: String): String? {
-        return runCatching {
-            Build::class.java.getField(fieldName).get(null)?.toString()
-        }.getOrNull()
-    }
-
-    private fun buildDeviceFingerprint(
-        socManufacturer: String?,
-        socModel: String?,
-    ): String {
-        return listOfNotNull(
-            Build.HARDWARE,
-            Build.BOARD,
-            Build.DEVICE,
-            Build.PRODUCT,
-            socManufacturer,
-            socModel,
-        ).joinToString(separator = " ").lowercase()
-    }
-
-    private fun isVulkanRuntimeSupported(): Boolean {
-        val pm = appContext.packageManager ?: return false
-        return pm.hasSystemFeature(PackageManager.FEATURE_VULKAN_HARDWARE_LEVEL) ||
-            pm.hasSystemFeature(PackageManager.FEATURE_VULKAN_HARDWARE_VERSION)
-    }
-
-    private fun buildFallbackResponse(prompt: String, maxTokens: Int): String {
-        val cappedPrompt = prompt.take(8000)
-        val budgetWords = (maxTokens.coerceAtLeast(64) / 2).coerceIn(64, 512)
-        val isRoleplay = prompt.contains("[Character") || prompt.contains("roleplay", ignoreCase = true)
-
-        val seedWords = Regex("[A-Za-z0-9_]+")
-            .findAll(cappedPrompt)
-            .map { it.value.lowercase() }
-            .filter { it.length > 2 }
-            .toList()
-
-        val domainHints = listOf(
-            "context", "memory", "response", "reasoning", "constraints", "details",
-            "latency", "threads", "gpu", "quality", "safety", "analysis"
+    
+    private var nativePtr = 0L
+    private var isLoaded = false
+    
+    /**
+     * Loads a GGUF model from the given path.
+     * 
+     * @param modelPath The path to the GGUF model file
+     * @param params Inference parameters from core-domain
+     * @return Result indicating success or failure
+     */
+    suspend fun load(
+        modelPath: String, 
+        params: com.masterllm.core.domain.model.InferenceParams = com.masterllm.core.domain.model.InferenceParams()
+    ) = withContext(Dispatchers.IO) {
+        val actualContextSize = params.maxTokens.coerceAtMost(4096).toLong()
+        val actualChatTemplate = params.systemPrompt.takeIf { it.isNotBlank() } ?: DEFAULT_CHAT_TEMPLATE
+        
+        nativePtr = loadModel(
+            modelPath,
+            minP = 0.1f,
+            temperature = params.temperature,
+            storeChats = true,
+            actualContextSize,
+            actualChatTemplate,
+            numThreads = 4,
+            useMmap = true,
+            useMlock = false,
         )
-
-        val vocabulary = (seedWords + domainHints)
-            .groupingBy { it }
-            .eachCount()
-            .entries
-            .sortedByDescending { it.value }
-            .map { it.key }
-            .take(80)
-            .ifEmpty { domainHints }
-
-        val lead = if (isRoleplay) {
-            "*The scene sharpens as the next move unfolds.*"
+        
+        isLoaded = nativePtr != 0L
+        
+        if (isLoaded) {
+            Log.i("GgufEngine", "Model loaded successfully: $modelPath")
         } else {
-            "Here is a direct on-device response based on your current context:"
+            throw IllegalStateException("Failed to load model")
         }
-
-        val body = buildString {
-            append(lead)
-            append(' ')
-            for (index in 0 until budgetWords) {
-                val token = vocabulary[index % vocabulary.size]
-                append(token)
-                if (index % 12 == 11) append(". ") else append(' ')
-            }
-            append("I can continue with a deeper pass if you want more detail.")
+    }
+    
+    /**
+     * Adds a user message to the conversation history.
+     */
+    fun addUserMessage(message: String) {
+        verifyHandle()
+        addChatMessage(nativePtr, message, "user")
+    }
+    
+    /**
+     * Adds a system prompt to the conversation.
+     */
+    fun addSystemPrompt(prompt: String) {
+        verifyHandle()
+        addChatMessage(nativePtr, prompt, "system")
+    }
+    
+    /**
+     * Adds an assistant message to the conversation.
+     */
+    fun addAssistantMessage(message: String) {
+        verifyHandle()
+        addChatMessage(nativePtr, message, "assistant")
+    }
+    
+    /**
+     * Returns the response generation speed in tokens per second.
+     */
+    fun getResponseGenerationSpeed(): Float {
+        verifyHandle()
+        return getResponseGenerationSpeed(nativePtr)
+    }
+    
+    /**
+     * Returns the number of tokens used in the current context.
+     */
+    fun getContextLengthUsed(): Int {
+        verifyHandle()
+        return getContextSizeUsed(nativePtr)
+    }
+    
+    /**
+     * Generates a response to the given query as a Flow of strings.
+     * The flow emits each piece of the response as it's generated.
+     * The special token "[EOG]" indicates end of generation.
+     * 
+     * @param query The user's query/prompt
+     * @return Flow of response pieces
+     */
+    fun getResponseAsFlow(query: String): Flow<String> = flow {
+        verifyHandle()
+        startCompletion(nativePtr, query)
+        
+        var piece = completionLoop(nativePtr)
+        while (piece != "[EOG]" && piece != "[STOP]" && piece != "[ERROR]") {
+            emit(piece)
+            piece = completionLoop(nativePtr)
         }
-        return body
+        
+        stopCompletion(nativePtr)
     }
-
-    private interface TokenCallback {
-        fun onToken(token: String)
+    
+    /**
+     * Generates a response to the given query as a complete string.
+     * This is a blocking call that returns the full response.
+     * 
+     * @param query The user's query/prompt
+     * @return The complete response from the model
+     */
+    fun getResponse(query: String): String {
+        verifyHandle()
+        startCompletion(nativePtr, query)
+        
+        val response = StringBuilder()
+        var piece = completionLoop(nativePtr)
+        
+        while (piece != "[EOG]" && piece != "[STOP]" && piece != "[ERROR]") {
+            response.append(piece)
+            piece = completionLoop(nativePtr)
+        }
+        
+        stopCompletion(nativePtr)
+        return response.toString()
     }
-
-    private external fun nativeLoadModel(
+    
+    /**
+     * Runs a benchmark on the model.
+     * 
+     * @param pp Number of prompt tokens
+     * @param tg Number of tokens to generate
+     * @param pl Number of tokens to preload
+     * @param nr Number of repetitions
+     * @return Benchmark results as a string
+     */
+    fun benchModel(pp: Int, tg: Int, pl: Int, nr: Int): String {
+        verifyHandle()
+        return benchModel(nativePtr, pp, tg, pl, nr)
+    }
+    
+    /**
+     * Unloads the model and releases resources.
+     */
+    fun close() {
+        if (nativePtr != 0L) {
+            close(nativePtr)
+            nativePtr = 0L
+            isLoaded = false
+        }
+    }
+    
+    /**
+     * Returns true if a model is currently loaded.
+     */
+    fun isModelLoaded(): Boolean = isLoaded && nativePtr != 0L
+    
+    private fun verifyHandle() {
+        check(nativePtr != 0L) { "Model is not loaded. Call load() first." }
+    }
+    
+    // Native methods
+    private external fun loadModel(
         modelPath: String,
-        threadCount: Int,
-        gpuLayers: Int,
-        contextSize: Int,
+        minP: Float,
+        temperature: Float,
+        storeChats: Boolean,
+        contextSize: Long,
+        chatTemplate: String,
+        nThreads: Int,
+        useMmap: Boolean,
+        useMlock: Boolean,
     ): Long
-
-    private external fun nativeUnloadModel(contextPtr: Long)
-
-    private external fun nativeGenerate(
-        contextPtr: Long,
-        prompt: String,
-        temperature: Float,
-        topP: Float,
-        topK: Int,
-        repeatPenalty: Float,
-        maxTokens: Int,
+    
+    private external fun addChatMessage(
+        modelPtr: Long,
+        message: String,
+        role: String,
+    )
+    
+    private external fun getResponseGenerationSpeed(modelPtr: Long): Float
+    private external fun getContextSizeUsed(modelPtr: Long): Int
+    private external fun close(modelPtr: Long)
+    private external fun startCompletion(modelPtr: Long, prompt: String)
+    private external fun completionLoop(modelPtr: Long): String
+    private external fun stopCompletion(modelPtr: Long)
+    private external fun benchModel(
+        modelPtr: Long,
+        pp: Int,
+        tg: Int,
+        pl: Int,
+        nr: Int,
     ): String
-
-    private external fun nativeGenerateTokens(
-        contextPtr: Long,
-        prompt: String,
-        temperature: Float,
-        topP: Float,
-        topK: Int,
-        repeatPenalty: Float,
-        maxTokens: Int,
-        callback: TokenCallback,
-    ): Boolean
-
-    private external fun nativeSetEnv(name: String, value: String): Boolean
-
-    private external fun nativeGetVocabSize(contextPtr: Long): Int
-
-    private external fun nativeTokenize(
-        contextPtr: Long,
-        text: String,
-        tokensOut: IntArray?,
-    ): Int
-
-    private external fun nativeClearKVCache(contextPtr: Long)
 }

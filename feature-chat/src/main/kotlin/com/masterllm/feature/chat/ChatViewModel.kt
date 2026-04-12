@@ -117,13 +117,14 @@ class ChatViewModel @Inject constructor(
                 settingsRepository.getGpuAccelerationEnabled(),
             ) { threadCount, gpuEnabled -> threadCount to gpuEnabled }
                 .collect { (threadCount, gpuEnabled) ->
-                    val config = ggufEngine.getRuntimeConfig()
-                    ggufEngine.updateRuntimeConfig(
-                        config.copy(
-                            threadCount = threadCount.coerceAtLeast(1),
-                            enableGpuOffload = gpuEnabled,
+                    // Update inference params with thread count
+                    _uiState.update { state ->
+                        state.copy(
+                            inferenceParams = state.inferenceParams.copy(
+                                numThreads = threadCount.coerceAtLeast(1)
+                            )
                         )
-                    )
+                    }
                 }
         }
     }
@@ -163,9 +164,9 @@ class ChatViewModel @Inject constructor(
                     selectedModelInfo = model,
                 )
             }
-            // Unload current model so next generation loads the new one
+            // Close current model so next generation loads the new one
             if (loadedModelId != null && loadedModelId != modelId) {
-                ggufEngine.unloadModel()
+                ggufEngine.close()
                 loadedModelId = null
             }
         }
@@ -214,56 +215,74 @@ class ChatViewModel @Inject constructor(
 
             _uiState.update { it.copy(isGenerating = true, streamingText = "") }
 
-            try {
-                val activeModel = ensureEngineReady(convo)
-                    ?: throw IllegalStateException("Download a GGUF model in Marketplace before chatting.")
+try {
+            val activeModel = ensureEngineReady(convo)
+                ?: throw IllegalStateException("Download a GGUF model in Marketplace before chatting.")
 
-                val targetModelId = activeModel.id
+            val targetModelId = activeModel.id
 
-                val prompt = buildPrompt(text)
-                val builder = StringBuilder()
-                val promptTokens = ggufEngine.estimateTokenCount(prompt)
-                val startedAtNs = System.nanoTime()
-
-                ggufEngine.generate(prompt).collect { token ->
-                    if (!_uiState.value.isGenerating) throw CancellationException("Generation stopped")
-                    builder.append(token)
-                    _uiState.update { it.copy(streamingText = builder.toString()) }
+            // Add system prompt if first message
+            if (_uiState.value.messages.isEmpty()) {
+                val systemPrompt = _uiState.value.inferenceParams.systemPrompt
+                if (systemPrompt.isNotBlank()) {
+                    ggufEngine.addSystemPrompt(systemPrompt)
                 }
+            }
 
-                val finalText = builder.toString().trim()
-                val completedAtNs = System.nanoTime()
-                if (finalText.isNotEmpty()) {
-                    val assistantMsg = Message(
-                        id = UUID.randomUUID().toString(),
-                        conversationId = convo.id,
-                        role = MessageRole.ASSISTANT,
-                        content = finalText,
+            // Add user message to engine
+            ggufEngine.addUserMessage(text)
+
+            val builder = StringBuilder()
+            val promptTokens = ggufEngine.getContextLengthUsed()
+            val startedAtNs = System.nanoTime()
+
+            // Generate response using new API
+            ggufEngine.getResponseAsFlow(text).collect { piece ->
+                if (!_uiState.value.isGenerating) throw CancellationException("Generation stopped")
+                builder.append(piece)
+                _uiState.update { it.copy(streamingText = builder.toString()) }
+            }
+
+            val finalText = builder.toString().trim()
+            val completedAtNs = System.nanoTime()
+            
+            // Add assistant message to engine and database
+            if (finalText.isNotEmpty()) {
+                ggufEngine.addAssistantMessage(finalText)
+                
+                val assistantMsg = Message(
+                    id = UUID.randomUUID().toString(),
+                    conversationId = convo.id,
+                    role = MessageRole.ASSISTANT,
+                    content = finalText,
+                )
+                conversationRepository.addMessage(assistantMsg)
+            }
+
+val elapsedMs = ((completedAtNs - startedAtNs) / 1_000_000L).coerceAtLeast(1L)
+            val generatedTokens = ggufEngine.getContextLengthUsed() - promptTokens
+            val tokensPerSecond = if (elapsedMs > 0) {
+                generatedTokens.toDouble() / (elapsedMs / 1000.0)
+            } else 0.0
+            
+            val genSpeed = ggufEngine.getResponseGenerationSpeed()
+
+            _uiState.update {
+                it.copy(
+                    lastGenerationStats = GenerationStats(
+                        modelDisplayName = activeModel.displayName.ifBlank { activeModel.repoId },
+                        backend = resolveBackendLabel(),
+                        promptTokens = promptTokens,
+                        generatedTokens = generatedTokens,
+                        generatedChars = finalText.length,
+                        durationMs = elapsedMs,
+                        tokensPerSecond = tokensPerSecond,
+                        threadCount = _uiState.value.inferenceParams.numThreads,
+                        gpuLayers = 0,
+                        contextSize = _uiState.value.inferenceParams.contextSize ?: 2048,
                     )
-                    conversationRepository.addMessage(assistantMsg)
-                }
-
-                val elapsedMs = ((completedAtNs - startedAtNs) / 1_000_000L).coerceAtLeast(1L)
-                val generatedTokens = ggufEngine.estimateTokenCount(finalText)
-                val tokensPerSecond = generatedTokens.toDouble() / (elapsedMs / 1000.0)
-                val loadedInfo = ggufEngine.getLoadedModelInfo()
-
-                _uiState.update {
-                    it.copy(
-                        lastGenerationStats = GenerationStats(
-                            modelDisplayName = activeModel.displayName.ifBlank { activeModel.repoId },
-                            backend = resolveBackendLabel(loadedInfo),
-                            promptTokens = promptTokens,
-                            generatedTokens = generatedTokens,
-                            generatedChars = finalText.length,
-                            durationMs = elapsedMs,
-                            tokensPerSecond = tokensPerSecond,
-                            threadCount = loadedInfo?.threadCount ?: ggufEngine.getRuntimeConfig().threadCount,
-                            gpuLayers = loadedInfo?.gpuLayers ?: 0,
-                            contextSize = loadedInfo?.contextSize ?: ggufEngine.getContextSize(),
-                        )
-                    )
-                }
+                )
+            }
 
                 if (convo.modelId != targetModelId) {
                     conversationRepository.updateConversation(
@@ -371,17 +390,27 @@ class ChatViewModel @Inject constructor(
 
         if (loadedModelId != model.id || !ggufEngine.isModelLoaded()) {
             val path = model.localPath ?: "/data/models/${model.fileName}"
-            ggufEngine.loadModel(path).getOrElse { throw it }
+            val params = _uiState.value.inferenceParams
+            ggufEngine.load(
+                modelPath = path,
+                params = com.masterllm.runtime.gguf.InferenceParams(
+                    minP = params.minP,
+                    temperature = params.temperature,
+                    storeChats = params.storeChats,
+                    contextSize = params.contextSize?.toLong() ?: 2048L,
+                    chatTemplate = params.systemPrompt,
+                    numThreads = params.numThreads,
+                    useMmap = true,
+                    useMlock = false
+                )
+            )
             loadedModelId = model.id
         }
         return model
     }
 
-    private fun resolveBackendLabel(info: GgufEngine.LoadedModelInfo?): String {
-        if (info == null) return "CPU fallback"
-        if (info.nativeBackend && info.gpuLayers > 0) return "GPU"
-        if (info.nativeBackend) return "CPU native"
-        return "CPU fallback"
+    private fun resolveBackendLabel(): String {
+        return if (ggufEngine.isModelLoaded()) "CPU native" else "Not loaded"
     }
 
     private fun buildPrompt(userText: String): String {
