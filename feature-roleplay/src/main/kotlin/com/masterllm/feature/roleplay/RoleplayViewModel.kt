@@ -38,6 +38,8 @@ data class RoleplayUiState(
     val setupUserDescription: String = "",
     val setupVisualStyle: VisualStyle = VisualStyle.FANTASY_ART,
     val error: String? = null,
+    // Inference parameters
+    val inferenceParams: InferenceParams = InferenceParams(),
 )
 
 sealed interface RoleplayAction {
@@ -61,6 +63,14 @@ sealed interface RoleplayAction {
     data class SetupStyleChanged(val v: VisualStyle) : RoleplayAction
     data object CreateSession : RoleplayAction
     data object DismissError : RoleplayAction
+    // Inference parameters
+    data class UpdateTemperature(val value: Float) : RoleplayAction
+    data class UpdateTopP(val value: Float) : RoleplayAction
+    data class UpdateTopK(val value: Int) : RoleplayAction
+    data class UpdateRepeatPenalty(val value: Float) : RoleplayAction
+    data class UpdateMaxTokens(val value: Int) : RoleplayAction
+    data class UpdateSystemPrompt(val value: String) : RoleplayAction
+    data object ResetInferenceParams : RoleplayAction
 }
 
 @HiltViewModel
@@ -130,13 +140,26 @@ class RoleplayViewModel @Inject constructor(
             is RoleplayAction.SetupPremiseChanged -> _uiState.update { it.copy(setupPremise = action.v) }
             is RoleplayAction.SetupAiNameChanged -> _uiState.update { it.copy(setupAiName = action.v) }
             is RoleplayAction.SetupAiDescChanged -> _uiState.update { it.copy(setupAiDescription = action.v) }
-            is RoleplayAction.SetupUserNameChanged -> _uiState.update { it.copy(setupUserName = action.v) }
-            is RoleplayAction.SetupUserDescChanged -> _uiState.update { it.copy(setupUserDescription = action.v) }
-            is RoleplayAction.SetupStyleChanged -> _uiState.update { it.copy(setupVisualStyle = action.v) }
-            RoleplayAction.CreateSession -> createSession()
-            RoleplayAction.DismissError -> _uiState.update { it.copy(error = null) }
-        }
+is RoleplayAction.SetupUserNameChanged -> _uiState.update { it.copy(setupUserName = action.v) }
+        is RoleplayAction.SetupUserDescChanged -> _uiState.update { it.copy(setupUserDescription = action.v) }
+        is RoleplayAction.SetupStyleChanged -> _uiState.update { it.copy(setupVisualStyle = action.v) }
+        RoleplayAction.CreateSession -> createSession()
+        RoleplayAction.DismissError -> _uiState.update { it.copy(error = null) }
+        is RoleplayAction.UpdateTemperature -> updateInferenceParams { it.copy(temperature = action.value) }
+        is RoleplayAction.UpdateTopP -> updateInferenceParams { it.copy(topP = action.value) }
+        is RoleplayAction.UpdateTopK -> updateInferenceParams { it.copy(topK = action.value) }
+        is RoleplayAction.UpdateRepeatPenalty -> updateInferenceParams { it.copy(repeatPenalty = action.value) }
+        is RoleplayAction.UpdateMaxTokens -> updateInferenceParams { it.copy(maxTokens = action.value) }
+        is RoleplayAction.UpdateSystemPrompt -> updateInferenceParams { it.copy(systemPrompt = action.value) }
+        RoleplayAction.ResetInferenceParams -> _uiState.update { it.copy(inferenceParams = InferenceParams()) }
     }
+}
+
+private fun updateInferenceParams(update: (InferenceParams) -> InferenceParams) {
+    _uiState.update { state ->
+        state.copy(inferenceParams = update(state.inferenceParams))
+    }
+}
 
     private fun createSession() {
         val s = _uiState.value
@@ -253,7 +276,7 @@ class RoleplayViewModel @Inject constructor(
                 val prompt = buildRoleplayPrompt(session, text)
                 val builder = StringBuilder()
 
-                ggufEngine.generate(prompt).collect { token ->
+                ggufEngine.generate(prompt, _uiState.value.inferenceParams).collect { token ->
                     if (!_uiState.value.isGenerating) throw CancellationException("Generation stopped")
                     builder.append(token)
                     _uiState.update { it.copy(streamingText = builder.toString()) }

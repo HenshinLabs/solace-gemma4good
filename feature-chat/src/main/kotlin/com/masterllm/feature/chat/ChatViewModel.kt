@@ -47,6 +47,9 @@ data class ChatUiState(
     val showConversationList: Boolean = true,
     val error: String? = null,
     val lastGenerationStats: GenerationStats? = null,
+    val inferenceParams: InferenceParams = InferenceParams(),
+    val showModelConfig: Boolean = false,
+    val selectedModelInfo: LlmModel? = null,
 )
 
 sealed interface ChatAction {
@@ -59,6 +62,15 @@ sealed interface ChatAction {
     data class SelectModel(val modelId: String) : ChatAction
     data object BackToList : ChatAction
     data object DismissError : ChatAction
+    data object ShowModelConfig : ChatAction
+    data object HideModelConfig : ChatAction
+    data class UpdateTemperature(val value: Float) : ChatAction
+    data class UpdateTopP(val value: Float) : ChatAction
+    data class UpdateTopK(val value: Int) : ChatAction
+    data class UpdateRepeatPenalty(val value: Float) : ChatAction
+    data class UpdateMaxTokens(val value: Int) : ChatAction
+    data class UpdateSystemPrompt(val value: String) : ChatAction
+    data object ResetInferenceParams : ChatAction
 }
 
 @HiltViewModel
@@ -124,11 +136,57 @@ class ChatViewModel @Inject constructor(
             is ChatAction.SelectConversation -> selectConversation(action.id)
             ChatAction.NewConversation -> newConversation()
             is ChatAction.DeleteConversation -> deleteConversation(action.id)
-            is ChatAction.SelectModel -> _uiState.update { it.copy(selectedModelId = action.modelId) }
+            is ChatAction.SelectModel -> selectModel(action.modelId)
             ChatAction.BackToList -> _uiState.update {
                 it.copy(showConversationList = true, currentConversation = null, messages = emptyList())
             }
             ChatAction.DismissError -> _uiState.update { it.copy(error = null) }
+            ChatAction.ShowModelConfig -> showModelConfig()
+            ChatAction.HideModelConfig -> _uiState.update { it.copy(showModelConfig = false) }
+            is ChatAction.UpdateTemperature -> updateInferenceParams { it.copy(temperature = action.value) }
+            is ChatAction.UpdateTopP -> updateInferenceParams { it.copy(topP = action.value) }
+            is ChatAction.UpdateTopK -> updateInferenceParams { it.copy(topK = action.value) }
+            is ChatAction.UpdateRepeatPenalty -> updateInferenceParams { it.copy(repeatPenalty = action.value) }
+            is ChatAction.UpdateMaxTokens -> updateInferenceParams { it.copy(maxTokens = action.value) }
+            is ChatAction.UpdateSystemPrompt -> updateInferenceParams { it.copy(systemPrompt = action.value) }
+            ChatAction.ResetInferenceParams -> _uiState.update { it.copy(inferenceParams = InferenceParams()) }
+        }
+    }
+
+    private fun selectModel(modelId: String) {
+        viewModelScope.launch {
+            val model = modelRepository.getModelById(modelId)
+                ?: _uiState.value.availableModels.firstOrNull { it.id == modelId }
+            _uiState.update {
+                it.copy(
+                    selectedModelId = modelId,
+                    selectedModelInfo = model,
+                )
+            }
+            // Unload current model so next generation loads the new one
+            if (loadedModelId != null && loadedModelId != modelId) {
+                ggufEngine.unloadModel()
+                loadedModelId = null
+            }
+        }
+    }
+
+    private fun showModelConfig() {
+        viewModelScope.launch {
+            val modelId = _uiState.value.selectedModelId
+            val model = modelId?.let { modelRepository.getModelById(it) }
+            _uiState.update {
+                it.copy(
+                    showModelConfig = true,
+                    selectedModelInfo = model,
+                )
+            }
+        }
+    }
+
+    private fun updateInferenceParams(update: (InferenceParams) -> InferenceParams) {
+        _uiState.update { state ->
+            state.copy(inferenceParams = update(state.inferenceParams))
         }
     }
 

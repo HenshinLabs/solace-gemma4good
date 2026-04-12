@@ -10,6 +10,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -32,6 +33,14 @@ fun ChatScreen(
     viewModel: ChatViewModel = hiltViewModel(),
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+
+    // Show model configuration dialog
+    if (state.showModelConfig) {
+        ModelConfigurationDialog(
+            state = state,
+            onAction = viewModel::onAction,
+        )
+    }
 
     AnimatedContent(
         targetState = state.showConversationList,
@@ -163,43 +172,47 @@ private fun ChatPane(
                         overflow = TextOverflow.Ellipsis,
                     )
                 },
-                actions = {
-                    if (state.availableModels.isNotEmpty()) {
-                        IconButton(onClick = { modelMenuExpanded = true }) {
-                            Icon(Icons.Default.ModelTraining, contentDescription = "Select model")
-                        }
-                        DropdownMenu(
-                            expanded = modelMenuExpanded,
-                            onDismissRequest = { modelMenuExpanded = false },
-                        ) {
-                            state.availableModels.forEach { model ->
-                                DropdownMenuItem(
-                                    text = {
-                                        Column {
-                                            Text(model.displayName.ifBlank { model.repoId })
-                                            if (model.quantization.isNotBlank()) {
-                                                Text(
-                                                    text = model.quantization,
-                                                    style = MaterialTheme.typography.labelSmall,
-                                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
-                                                )
-                                            }
+            actions = {
+                // Model config button
+                IconButton(onClick = { onAction(ChatAction.ShowModelConfig) }) {
+                    Icon(Icons.Default.Settings, contentDescription = "Model settings")
+                }
+                if (state.availableModels.isNotEmpty()) {
+                    IconButton(onClick = { modelMenuExpanded = true }) {
+                        Icon(Icons.Default.ModelTraining, contentDescription = "Select model")
+                    }
+                    DropdownMenu(
+                        expanded = modelMenuExpanded,
+                        onDismissRequest = { modelMenuExpanded = false },
+                    ) {
+                        state.availableModels.forEach { model ->
+                            DropdownMenuItem(
+                                text = {
+                                    Column {
+                                        Text(model.displayName.ifBlank { model.repoId })
+                                        if (model.quantization.isNotBlank()) {
+                                            Text(
+                                                text = model.quantization,
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                                            )
                                         }
-                                    },
-                                    onClick = {
-                                        onAction(ChatAction.SelectModel(model.id))
-                                        modelMenuExpanded = false
-                                    },
-                                    trailingIcon = {
-                                        if (state.selectedModelId == model.id) {
-                                            Icon(Icons.Default.Check, contentDescription = null)
-                                        }
-                                    },
-                                )
-                            }
+                                    }
+                                },
+                                onClick = {
+                                    onAction(ChatAction.SelectModel(model.id))
+                                    modelMenuExpanded = false
+                                },
+                                trailingIcon = {
+                                    if (state.selectedModelId == model.id) {
+                                        Icon(Icons.Default.Check, contentDescription = null)
+                                    }
+                                },
+                            )
                         }
                     }
-                },
+                }
+            },
             )
         },
         bottomBar = {
@@ -407,5 +420,197 @@ private fun ChatInputBar(
                 }
             }
         }
+    }
+}
+
+// ─── Model Configuration Dialog ─────────────────────────────────
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ModelConfigurationDialog(
+    state: ChatUiState,
+    onAction: (ChatAction) -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = { onAction(ChatAction.HideModelConfig) },
+        title = {
+            Text(
+                text = "Model Configuration",
+                style = MaterialTheme.typography.headlineSmall,
+            )
+        },
+        text = {
+            LazyColumn(
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+            ) {
+                // Selected model info
+                item {
+                    state.selectedModelInfo?.let { model ->
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = CardDefaults.cardColors(
+                                containerColor = MaterialTheme.colorScheme.primaryContainer,
+                            ),
+                        ) {
+                            Column(modifier = Modifier.padding(12.dp)) {
+                                Text(
+                                    text = model.displayName,
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.SemiBold,
+                                )
+                                Text(
+                                    text = "Format: ${model.format.name} | Quant: ${model.quantization}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
+                                Text(
+                                    text = "Size: %.2f GB".format(model.sizeBytes / (1024.0 * 1024.0 * 1024.0)),
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // Temperature
+                item {
+                    ParameterSlider(
+                        label = "Temperature",
+                        value = state.inferenceParams.temperature,
+                        onValueChange = { onAction(ChatAction.UpdateTemperature(it)) },
+                        valueRange = 0.0f..2.0f,
+                        steps = 40,
+                    )
+                }
+
+                // Top P
+                item {
+                    ParameterSlider(
+                        label = "Top P",
+                        value = state.inferenceParams.topP,
+                        onValueChange = { onAction(ChatAction.UpdateTopP(it)) },
+                        valueRange = 0.0f..1.0f,
+                        steps = 20,
+                    )
+                }
+
+                // Top K
+                item {
+                    ParameterIntSlider(
+                        label = "Top K",
+                        value = state.inferenceParams.topK,
+                        onValueChange = { onAction(ChatAction.UpdateTopK(it)) },
+                        valueRange = 1..100,
+                    )
+                }
+
+                // Repeat Penalty
+                item {
+                    ParameterSlider(
+                        label = "Repeat Penalty",
+                        value = state.inferenceParams.repeatPenalty,
+                        onValueChange = { onAction(ChatAction.UpdateRepeatPenalty(it)) },
+                        valueRange = 1.0f..2.0f,
+                        steps = 20,
+                    )
+                }
+
+                // Max Tokens
+                item {
+                    ParameterIntSlider(
+                        label = "Max Tokens",
+                        value = state.inferenceParams.maxTokens,
+                        onValueChange = { onAction(ChatAction.UpdateMaxTokens(it)) },
+                        valueRange = 64..8192,
+                        steps = 100,
+                    )
+                }
+
+                // System Prompt
+                item {
+                    OutlinedTextField(
+                        value = state.inferenceParams.systemPrompt,
+                        onValueChange = { onAction(ChatAction.UpdateSystemPrompt(it)) },
+                        label = { Text("System Prompt") },
+                        modifier = Modifier.fillMaxWidth(),
+                        minLines = 2,
+                        maxLines = 4,
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(onClick = { onAction(ChatAction.HideModelConfig) }) {
+                Text("Done")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = { onAction(ChatAction.ResetInferenceParams) }) {
+                Text("Reset to Defaults")
+            }
+        },
+    )
+}
+
+@Composable
+private fun ParameterSlider(
+    label: String,
+    value: Float,
+    onValueChange: (Float) -> Unit,
+    valueRange: ClosedFloatingPointRange<Float>,
+    steps: Int = 0,
+) {
+    Column {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelLarge,
+            )
+            Text(
+                text = "%.2f".format(value),
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Medium,
+            )
+        }
+        Slider(
+            value = value,
+            onValueChange = onValueChange,
+            valueRange = valueRange,
+            steps = steps,
+        )
+    }
+}
+
+@Composable
+private fun ParameterIntSlider(
+    label: String,
+    value: Int,
+    onValueChange: (Int) -> Unit,
+    valueRange: IntRange,
+    steps: Int = 0,
+) {
+    Column {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelLarge,
+            )
+            Text(
+                text = value.toString(),
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Medium,
+            )
+        }
+        Slider(
+            value = value.toFloat(),
+            onValueChange = { onValueChange(it.toInt()) },
+            valueRange = valueRange.first.toFloat()..valueRange.last.toFloat(),
+            steps = if (steps > 0) steps else (valueRange.last - valueRange.first) / 10,
+        )
     }
 }

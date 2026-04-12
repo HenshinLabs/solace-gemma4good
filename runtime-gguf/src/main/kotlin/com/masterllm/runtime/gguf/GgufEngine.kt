@@ -330,13 +330,57 @@ class GgufEngine @Inject constructor(
     fun getContextSize(): Int = loadedModelInfo?.contextSize ?: 4096
 
     /**
-     * Estimate token count for a string.
+     * Estimate token count for a string using native tokenizer if available.
      */
     fun estimateTokenCount(text: String): Int {
-        val whitespaceTokens = text.trim().split(Regex("\\s+")).count { it.isNotBlank() }
-        if (whitespaceTokens > 0) return whitespaceTokens
-        // Fallback for compact text with no spaces.
-        return (text.length / 4).coerceAtLeast(1)
+        if (!isNativeAvailable() || nativeContextPtr == 0L) {
+            // Fallback estimation
+            val whitespaceTokens = text.trim().split(Regex("\\s+")).count { it.isNotBlank() }
+            if (whitespaceTokens > 0) return whitespaceTokens
+            return (text.length / 4).coerceAtLeast(1)
+        }
+        return runCatching {
+            nativeTokenize(nativeContextPtr, text, null)
+        }.getOrDefault(
+            text.trim().split(Regex("\\s+")).count { it.isNotBlank() }
+        )
+    }
+
+    /**
+     * Clear the KV cache to free memory and reset generation state.
+     */
+    fun clearKVCache() {
+        if (isNativeAvailable() && nativeContextPtr != 0L) {
+            runCatching { nativeClearKVCache(nativeContextPtr) }
+                .onFailure { Timber.w(it, "GgufEngine: Failed to clear KV cache") }
+        }
+    }
+
+    /**
+     * Get the vocabulary size of the loaded model.
+     */
+    fun getVocabSize(): Int {
+        if (!isNativeAvailable() || nativeContextPtr == 0L) return 0
+        return runCatching { nativeGetVocabSize(nativeContextPtr) }.getOrDefault(0)
+    }
+
+    /**
+     * Tokenize text into token IDs.
+     * @return Number of tokens, or -1 on error
+     */
+    fun tokenize(text: String): List<Int> {
+        if (!isNativeAvailable() || nativeContextPtr == 0L || text.isEmpty()) return emptyList()
+
+        return runCatching {
+            val maxTokens = (text.length + 16).coerceAtMost(32768)
+            val tokenArray = IntArray(maxTokens)
+            val nTokens = nativeTokenize(nativeContextPtr, text, tokenArray)
+            if (nTokens > 0) {
+                tokenArray.take(nTokens).toList()
+            } else {
+                emptyList()
+            }
+        }.getOrDefault(emptyList())
     }
 
     private fun ensureNativeLibraryLoaded() {
@@ -512,4 +556,14 @@ class GgufEngine @Inject constructor(
     ): Boolean
 
     private external fun nativeSetEnv(name: String, value: String): Boolean
+
+    private external fun nativeGetVocabSize(contextPtr: Long): Int
+
+    private external fun nativeTokenize(
+        contextPtr: Long,
+        text: String,
+        tokensOut: IntArray?,
+    ): Int
+
+    private external fun nativeClearKVCache(contextPtr: Long)
 }
