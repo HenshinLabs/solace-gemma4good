@@ -370,8 +370,6 @@ class RoleplayViewModel @Inject constructor(
 
                 _uiState.update { it.copy(generationStatus = "Processing prompt...") }
 
-                ggufEngine.addUserMessage(text)
-
                 val builder = StringBuilder()
                 val promptTokens = ggufEngine.getContextLengthUsed()
                 val startedAtNs = System.nanoTime()
@@ -390,8 +388,6 @@ class RoleplayViewModel @Inject constructor(
                 val finalText = builder.toString().trim()
                 val completedAtNs = System.nanoTime()
                 if (finalText.isNotEmpty()) {
-                    ggufEngine.addAssistantMessage(finalText)
-
                     val aiMsg = Message(
                         id = UUID.randomUUID().toString(),
                         conversationId = session.conversationId,
@@ -492,7 +488,7 @@ class RoleplayViewModel @Inject constructor(
                     safetensorsEngine.loadModel(safePath).getOrElse { throw it }
                     throw IllegalStateException(
                         "SafeTensors weights were validated, but roleplay text inference requires GGUF. " +
-                            "Download or convert a GGUF variant for this model.",
+                            "Download or convert a GGUF variant for this model offline.",
                     )
                 }
             }

@@ -4,9 +4,12 @@ import android.content.Context
 import android.os.Build
 import android.util.Log
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileNotFoundException
@@ -197,15 +200,19 @@ class GgufEngine @Inject constructor(
     fun getResponseAsFlow(query: String): Flow<String> = flow {
         verifyHandle()
         startCompletion(nativePtr, query)
-        
-        var piece = completionLoop(nativePtr)
-        while (piece != "[EOG]" && piece != "[STOP]" && piece != "[ERROR]") {
-            emit(piece)
-            piece = completionLoop(nativePtr)
+
+        try {
+            while (currentCoroutineContext().isActive) {
+                val piece = completionLoop(nativePtr)
+                when (piece) {
+                    "[EOG]", "[STOP]", "[ERROR]" -> break
+                    else -> if (piece.isNotEmpty()) emit(piece)
+                }
+            }
+        } finally {
+            stopCompletion(nativePtr)
         }
-        
-        stopCompletion(nativePtr)
-    }
+    }.flowOn(Dispatchers.Default)
     
     /**
      * Generates a response to the given query as a complete string.
@@ -217,16 +224,20 @@ class GgufEngine @Inject constructor(
     fun getResponse(query: String): String {
         verifyHandle()
         startCompletion(nativePtr, query)
-        
+
         val response = StringBuilder()
-        var piece = completionLoop(nativePtr)
-        
-        while (piece != "[EOG]" && piece != "[STOP]" && piece != "[ERROR]") {
-            response.append(piece)
-            piece = completionLoop(nativePtr)
+
+        try {
+            var piece = completionLoop(nativePtr)
+
+            while (piece != "[EOG]" && piece != "[STOP]" && piece != "[ERROR]") {
+                response.append(piece)
+                piece = completionLoop(nativePtr)
+            }
+        } finally {
+            stopCompletion(nativePtr)
         }
-        
-        stopCompletion(nativePtr)
+
         return response.toString()
     }
     

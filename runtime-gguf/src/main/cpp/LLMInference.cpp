@@ -101,8 +101,11 @@ void LLMInference::startCompletion(const char *query) {
         _formattedMessages = std::vector<char>(llama_n_ctx(_ctx));
     }
     
+    _generationReachedEog = false;
     _responseGenerationTime = 0;
     _responseNumTokens = 0;
+    _response.clear();
+    _cacheResponseTokens.clear();
     
     addChatMessage(query, "user");
     
@@ -126,6 +129,10 @@ void LLMInference::startCompletion(const char *query) {
     _promptTokens = common_tokenize(llama_model_get_vocab(_model), prompt, true, true);
     
     // Create batch
+    if (_batch != nullptr) {
+        delete _batch;
+        _batch = nullptr;
+    }
     _batch = new llama_batch();
     _batch->token = _promptTokens.data();
     _batch->n_tokens = _promptTokens.size();
@@ -179,9 +186,7 @@ std::string LLMInference::completionLoop() {
     
     // Check end of generation
     if (llama_vocab_is_eog(llama_model_get_vocab(_model), _currToken)) {
-        if (!_response.empty()) {
-            addChatMessage(_response.c_str(), "assistant");
-        }
+        _generationReachedEog = true;
         return "[EOG]";
     }
     
@@ -208,9 +213,10 @@ std::string LLMInference::completionLoop() {
 }
 
 void LLMInference::stopCompletion() {
-    if (_storeChats && !_response.empty()) {
+    if (_storeChats && _generationReachedEog && !_response.empty()) {
         addChatMessage(_response.c_str(), "assistant");
     }
+    _generationReachedEog = false;
     _response.clear();
     _cacheResponseTokens.clear();
 }

@@ -343,7 +343,7 @@ class ChatViewModel @Inject constructor(
                         if (hasGgufFallback) {
                             "SafeTensors validated. Chat inference will use a GGUF runtime fallback."
                         } else {
-                            "SafeTensors validated. Download any GGUF model for on-device text generation."
+                            "SafeTensors validated. Download any GGUF model for on-device text generation (automatic SafeTensors conversion is not available on-device)."
                         }
                     }
 
@@ -435,15 +435,15 @@ class ChatViewModel @Inject constructor(
 
             _uiState.update { it.copy(inputText = "", currentConversation = convo, error = null) }
 
-            val userMsg = Message(
-                id = UUID.randomUUID().toString(),
-                conversationId = convo.id,
-                role = MessageRole.USER,
-                content = text,
-            )
-            conversationRepository.addMessage(userMsg)
-
             if (selectedModel.format == ModelFormat.DIFFUSERS) {
+                val userMsg = Message(
+                    id = UUID.randomUUID().toString(),
+                    conversationId = convo.id,
+                    role = MessageRole.USER,
+                    content = text,
+                )
+                conversationRepository.addMessage(userMsg)
+
                 generateImageResponse(conversation = convo, userText = text, imageModel = selectedModel)
 
                 if (convo.title == "New Conversation") {
@@ -468,9 +468,16 @@ class ChatViewModel @Inject constructor(
                 val activeModel = ready.model
                 val targetModelId = activeModel.id
 
-                _uiState.update { it.copy(generationStatus = "Processing prompt...") }
+                // Persist the user message after replay/load completes to avoid duplicate native context entries.
+                val userMsg = Message(
+                    id = UUID.randomUUID().toString(),
+                    conversationId = convo.id,
+                    role = MessageRole.USER,
+                    content = text,
+                )
+                conversationRepository.addMessage(userMsg)
 
-                ggufEngine.addUserMessage(text)
+                _uiState.update { it.copy(generationStatus = "Processing prompt...") }
 
                 val builder = StringBuilder()
                 val promptTokens = ggufEngine.getContextLengthUsed()
@@ -491,8 +498,6 @@ class ChatViewModel @Inject constructor(
                 val completedAtNs = System.nanoTime()
 
                 if (finalText.isNotEmpty()) {
-                    ggufEngine.addAssistantMessage(finalText)
-
                     val assistantMsg = Message(
                         id = UUID.randomUUID().toString(),
                         conversationId = convo.id,
@@ -788,7 +793,7 @@ class ChatViewModel @Inject constructor(
                     safetensorsEngine.loadModel(safePath).getOrElse { throw it }
                     throw IllegalStateException(
                         "SafeTensors weights were validated, but on-device text generation requires GGUF. " +
-                            "Download any GGUF model (or convert this model to GGUF) and try again.",
+                            "Download any GGUF model (or convert this model to GGUF offline) and try again.",
                     )
                 }
             }

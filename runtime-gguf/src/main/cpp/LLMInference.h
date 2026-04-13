@@ -28,6 +28,7 @@ private:
     std::string _chatTemplate;
     std::string _response;
     std::string _cacheResponseTokens;
+    bool _generationReachedEog = false;
     
     bool _storeChats = true;
     int64_t _responseGenerationTime = 0;
