@@ -32,6 +32,7 @@ private const val TASK_FILTER_ALL = "All tasks"
 private const val LIVE_SEARCH_DEBOUNCE_MS = 300L
 private const val PROGRESS_SAMPLE_INTERVAL_MS = 350L
 private const val BYTES_PER_GIB = 1024.0 * 1024.0 * 1024.0
+private const val MAX_FILTER_SCAN_PAGES = 8
 
 enum class MarketplaceSort(
     val label: String,
@@ -265,60 +266,112 @@ class MarketplaceViewModel @Inject constructor(
         requestedPage: Int? = null,
     ) {
         val targetPage = requestedPage ?: if (resetPage) 0 else _uiState.value.currentPage
-        val normalizedQuery = query.trim().ifBlank { "GGUF" }
         val requestId = ++searchRequestCounter
 
         viewModelScope.launch {
             _uiState.update { it.copy(isSearching = true, isSearchingLive = false, error = null) }
             try {
-                val sort = _uiState.value.selectedSort
-                val results = huggingFaceApi.searchModels(
-                    query = normalizedQuery,
-                    filter = null,
-                    sort = sort.apiSort,
-                    direction = sort.apiDirection,
-                    limit = PAGE_SIZE,
-                    offset = (targetPage.coerceAtLeast(0) * PAGE_SIZE),
-                )
+                val stateSnapshot = _uiState.value
+                val sort = stateSnapshot.selectedSort
+                val requestedPageIndex = targetPage.coerceAtLeast(0)
+                val remoteQuery = buildRemoteSearchQuery(
+                    baseQuery = query,
+                    formatFilter = stateSnapshot.selectedFormatFilter,
+                    taskFilter = stateSnapshot.selectedTaskFilter,
+                ).ifBlank { "GGUF" }
+
+                val shouldScanExtraPages = hasActiveLocalFilters(stateSnapshot)
+                val mapped = mutableListOf<HfModelInfo>()
+                val seenModelIds = linkedSetOf<String>()
+                var remoteHasNext = false
+
+                if (shouldScanExtraPages) {
+                    val requiredFilteredResults = ((requestedPageIndex + 1) * PAGE_SIZE) + PAGE_SIZE
+                    var remotePage = 0
+
+                    while (remotePage < MAX_FILTER_SCAN_PAGES) {
+                        val results = huggingFaceApi.searchModels(
+                            query = remoteQuery,
+                            filter = null,
+                            sort = sort.apiSort,
+                            direction = sort.apiDirection,
+                            limit = PAGE_SIZE,
+                            offset = (remotePage * PAGE_SIZE),
+                        )
+
+                        remoteHasNext = results.size >= PAGE_SIZE
+                        if (results.isEmpty()) break
+
+                        val mappedBatch = results
+                            .map(::mapModelResponse)
+                            .filter { seenModelIds.add(it.modelId) }
+                        mapped += mappedBatch
+
+                        val filteredCount = applyLocalFilters(
+                            models = mapped,
+                            taskFilter = stateSnapshot.selectedTaskFilter,
+                            formatFilter = stateSnapshot.selectedFormatFilter,
+                            sizeFilter = stateSnapshot.selectedSizeFilter,
+                        ).size
+
+                        if (!remoteHasNext || filteredCount >= requiredFilteredResults) {
+                            break
+                        }
+
+                        remotePage += 1
+                    }
+                } else {
+                    val results = huggingFaceApi.searchModels(
+                        query = remoteQuery,
+                        filter = null,
+                        sort = sort.apiSort,
+                        direction = sort.apiDirection,
+                        limit = PAGE_SIZE,
+                        offset = (requestedPageIndex * PAGE_SIZE),
+                    )
+                    remoteHasNext = results.size >= PAGE_SIZE
+                    mapped += results.map(::mapModelResponse)
+                }
 
                 if (requestId != searchRequestCounter) return@launch
 
-                val mapped = results.map(::mapModelResponse)
-                
-                // Estimate total results - Hugging Face API doesn't return total count
-                // We estimate based on whether we got a full page
-                val hasNext = results.size >= PAGE_SIZE
-                val estimatedTotal = if (hasNext) {
-                    // If we have more pages, estimate based on current page
-                    ((targetPage + 2) * PAGE_SIZE).coerceAtLeast(mapped.size)
-                } else {
-                    (targetPage * PAGE_SIZE) + mapped.size
-                }
-                
                 _uiState.update { current ->
                     val taskFilters = buildTaskFilters(mapped)
                     val selectedTask = current.selectedTaskFilter
                         .takeIf { it in taskFilters }
                         ?: TASK_FILTER_ALL
 
-                    val filtered = applyLocalFilters(
+                    val filteredAll = applyLocalFilters(
                         models = mapped,
                         taskFilter = selectedTask,
                         formatFilter = current.selectedFormatFilter,
                         sizeFilter = current.selectedSizeFilter,
                     )
 
+                    val maxPage = if (filteredAll.isEmpty()) 0 else (filteredAll.size - 1) / PAGE_SIZE
+                    val resolvedPage = requestedPageIndex.coerceIn(0, maxPage)
+                    val pageStart = resolvedPage * PAGE_SIZE
+                    val pagedResults = filteredAll.drop(pageStart).take(PAGE_SIZE)
+
+                    val hasLocalNextPage = pageStart + pagedResults.size < filteredAll.size
+                    val hasNext = hasLocalNextPage || remoteHasNext
+                    val estimatedTotal = if (!hasNext) {
+                        pageStart + pagedResults.size
+                    } else {
+                        maxOf(filteredAll.size, pageStart + pagedResults.size + PAGE_SIZE)
+                    }
+
                     current.copy(
                         isSearching = false,
                         isSearchingLive = false,
                         rawSearchResults = mapped,
-                        searchResults = filtered,
-                        currentPage = targetPage.coerceAtLeast(0),
+                        searchResults = pagedResults,
+                        currentPage = resolvedPage,
                         hasNextPage = hasNext,
                         totalResults = estimatedTotal,
                         availableTaskFilters = taskFilters,
                         selectedTaskFilter = selectedTask,
-                        compatibilityByModelId = computeCompatibilityMap(filtered, current.deviceProfile),
+                        compatibilityByModelId = computeCompatibilityMap(pagedResults, current.deviceProfile),
                         lastSearchResultsCount = estimatedTotal,
                     )
                 }
@@ -337,20 +390,65 @@ class MarketplaceViewModel @Inject constructor(
             val selectedTask = current.selectedTaskFilter
                 .takeIf { it in availableTasks }
                 ?: TASK_FILTER_ALL
-            val filtered = applyLocalFilters(
+            val filteredAll = applyLocalFilters(
                 models = current.rawSearchResults,
                 taskFilter = selectedTask,
                 formatFilter = current.selectedFormatFilter,
                 sizeFilter = current.selectedSizeFilter,
             )
 
+            val maxPage = if (filteredAll.isEmpty()) 0 else (filteredAll.size - 1) / current.pageSize
+            val resolvedPage = current.currentPage.coerceIn(0, maxPage)
+            val pageStart = resolvedPage * current.pageSize
+            val pagedResults = filteredAll.drop(pageStart).take(current.pageSize)
+            val hasNext = pageStart + pagedResults.size < filteredAll.size
+
             current.copy(
-                searchResults = filtered,
+                searchResults = pagedResults,
                 availableTaskFilters = availableTasks,
                 selectedTaskFilter = selectedTask,
-                compatibilityByModelId = computeCompatibilityMap(filtered, current.deviceProfile),
+                currentPage = resolvedPage,
+                hasNextPage = hasNext,
+                totalResults = filteredAll.size,
+                compatibilityByModelId = computeCompatibilityMap(pagedResults, current.deviceProfile),
+                lastSearchResultsCount = filteredAll.size,
             )
         }
+    }
+
+    private fun hasActiveLocalFilters(state: MarketplaceUiState): Boolean {
+        return state.selectedTaskFilter != TASK_FILTER_ALL ||
+            state.selectedFormatFilter != ModelFormatFilter.ANY ||
+            state.selectedSizeFilter != ParameterSizeFilter.ANY
+    }
+
+    private fun buildRemoteSearchQuery(
+        baseQuery: String,
+        formatFilter: ModelFormatFilter,
+        taskFilter: String,
+    ): String {
+        val terms = mutableListOf<String>()
+        val trimmedBase = baseQuery.trim()
+        if (trimmedBase.isNotBlank()) {
+            terms += trimmedBase
+        }
+
+        when (formatFilter) {
+            ModelFormatFilter.ANY -> Unit
+            ModelFormatFilter.GGUF -> terms += "gguf"
+            ModelFormatFilter.SAFETENSORS -> terms += "safetensors"
+            ModelFormatFilter.DIFFUSERS -> terms += "diffusers"
+        }
+
+        if (taskFilter != TASK_FILTER_ALL) {
+            terms += taskFilter
+        }
+
+        return terms
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .distinctBy { it.lowercase() }
+            .joinToString(separator = " ")
     }
 
     private fun buildTaskFilters(models: List<HfModelInfo>): List<String> {

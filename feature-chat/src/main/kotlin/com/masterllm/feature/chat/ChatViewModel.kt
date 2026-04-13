@@ -1,5 +1,7 @@
 package com.masterllm.feature.chat
 
+import android.content.Context
+import android.graphics.Bitmap
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.masterllm.core.domain.model.*
@@ -7,9 +9,13 @@ import com.masterllm.core.domain.repository.ConversationRepository
 import com.masterllm.core.domain.repository.ModelRepository
 import com.masterllm.core.domain.repository.SettingsRepository
 import com.masterllm.runtime.gguf.GgufEngine
+import com.masterllm.runtime.imagegen.ImageGenEngine
+import com.masterllm.runtime.imagegen.ImageGenProgress
 import com.masterllm.runtime.safetensors.SafetensorsEngine
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -22,6 +28,8 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
+import java.io.File
 import java.util.UUID
 import javax.inject.Inject
 
@@ -43,6 +51,30 @@ data class GenerationStats(
     val generatedAtEpochMs: Long = System.currentTimeMillis(),
 )
 
+enum class ModelLoadStatus {
+    IDLE,
+    LOADING,
+    LOADED,
+    ERROR,
+}
+
+data class ModelRuntimeInfo(
+    val modelId: String? = null,
+    val modelDisplayName: String = "No model selected",
+    val status: ModelLoadStatus = ModelLoadStatus.IDLE,
+    val backend: String = "Not loaded",
+    val modelPath: String? = null,
+    val loadDurationMs: Long? = null,
+    val threadCount: Int = 4,
+    val contextSize: Int = 2048,
+    val gpuAccelerationEnabled: Boolean = false,
+    val gpuOffloadLayers: Int = 0,
+    val cpuExecutionEnabled: Boolean = true,
+    val offloadSummary: String = "CPU execution",
+    val note: String = "Select a model to preload.",
+    val lastError: String? = null,
+)
+
 data class ChatUiState(
     val conversations: List<Conversation> = emptyList(),
     val currentConversation: Conversation? = null,
@@ -59,6 +91,7 @@ data class ChatUiState(
     val inferenceParams: InferenceParams = InferenceParams(),
     val showModelConfig: Boolean = false,
     val selectedModelInfo: LlmModel? = null,
+    val modelRuntime: ModelRuntimeInfo = ModelRuntimeInfo(),
 )
 
 sealed interface ChatAction {
@@ -72,6 +105,7 @@ sealed interface ChatAction {
     data object BackToList : ChatAction
     data object DismissError : ChatAction
     data object ShowModelConfig : ChatAction
+    data object RefreshModelRuntime : ChatAction
     data object HideModelConfig : ChatAction
     data class UpdateTemperature(val value: Float) : ChatAction
     data class UpdateTopP(val value: Float) : ChatAction
@@ -88,7 +122,9 @@ class ChatViewModel @Inject constructor(
     private val modelRepository: ModelRepository,
     private val settingsRepository: SettingsRepository,
     private val ggufEngine: GgufEngine,
+    private val imageGenEngine: ImageGenEngine,
     private val safetensorsEngine: SafetensorsEngine,
+    @ApplicationContext private val appContext: Context,
 ) : ViewModel() {
 
     private data class EngineReadyResult(
@@ -102,7 +138,10 @@ class ChatViewModel @Inject constructor(
 
     private var messagesJob: Job? = null
     private var generationJob: Job? = null
+    private var modelProbeJob: Job? = null
     private var loadedModelId: String? = null
+    private var loadedImageModelId: String? = null
+    private var gpuAccelerationEnabled: Boolean = false
     private val engineMutex = Mutex()
 
     init {
@@ -117,16 +156,30 @@ class ChatViewModel @Inject constructor(
             modelRepository.getDownloadedModels().collect { models ->
                 val filtered = models.filter {
                     it.downloadState == DownloadState.DOWNLOADED &&
-                        (it.format == ModelFormat.GGUF || it.format == ModelFormat.SAFETENSORS)
+                        (
+                            it.format == ModelFormat.GGUF ||
+                                it.format == ModelFormat.SAFETENSORS ||
+                                it.format == ModelFormat.DIFFUSERS
+                            )
                 }
+                var selectedModelId: String? = null
                 _uiState.update { state ->
                     val selected = state.selectedModelId?.takeIf { selectedId ->
                         filtered.any { it.id == selectedId }
-                    } ?: filtered.firstOrNull()?.id
+                    } ?: filtered.firstOrNull { it.format == ModelFormat.GGUF }?.id
+                    ?: filtered.firstOrNull { it.format == ModelFormat.SAFETENSORS }?.id
+                    ?: filtered.firstOrNull()?.id
+                    selectedModelId = selected
                     state.copy(
                         availableModels = filtered,
                         selectedModelId = selected,
                     )
+                }
+                selectedModelId?.let { selected ->
+                    val runtime = _uiState.value.modelRuntime
+                    if (runtime.modelId != selected || runtime.status == ModelLoadStatus.ERROR) {
+                        probeSelectedModel(selected, force = false)
+                    }
                 }
             }
         }
@@ -136,12 +189,21 @@ class ChatViewModel @Inject constructor(
                 settingsRepository.getGpuAccelerationEnabled(),
             ) { threadCount, gpuEnabled -> threadCount to gpuEnabled }
                 .collect { (threadCount, gpuEnabled) ->
+                    gpuAccelerationEnabled = gpuEnabled
+                    val normalizedThreads = threadCount.coerceAtLeast(1)
                     // Update inference params with thread count
                     _uiState.update { state ->
                         state.copy(
                             inferenceParams = state.inferenceParams.copy(
-                                numThreads = threadCount.coerceAtLeast(1)
-                            )
+                                numThreads = normalizedThreads,
+                            ),
+                            modelRuntime = state.modelRuntime.copy(
+                                threadCount = normalizedThreads,
+                                contextSize = state.inferenceParams.contextSize ?: 2048,
+                                gpuAccelerationEnabled = gpuEnabled,
+                                gpuOffloadLayers = 0,
+                                offloadSummary = buildOffloadSummary(gpuEnabled = gpuEnabled, gpuLayers = 0),
+                            ),
                         )
                     }
                 }
@@ -162,6 +224,11 @@ class ChatViewModel @Inject constructor(
             }
             ChatAction.DismissError -> _uiState.update { it.copy(error = null) }
             ChatAction.ShowModelConfig -> showModelConfig()
+            ChatAction.RefreshModelRuntime -> {
+                _uiState.value.selectedModelId?.let { selected ->
+                    probeSelectedModel(selected, force = true)
+                }
+            }
             ChatAction.HideModelConfig -> _uiState.update { it.copy(showModelConfig = false) }
             is ChatAction.UpdateTemperature -> updateInferenceParams { it.copy(temperature = action.value) }
             is ChatAction.UpdateTopP -> updateInferenceParams { it.copy(topP = action.value) }
@@ -204,6 +271,127 @@ class ChatViewModel @Inject constructor(
                 ggufEngine.close()
                 loadedModelId = null
             }
+            if (loadedImageModelId != null && loadedImageModelId != modelId) {
+                imageGenEngine.unloadModel()
+                loadedImageModelId = null
+            }
+
+            probeSelectedModel(modelId, force = true)
+        }
+    }
+
+    private fun probeSelectedModel(modelId: String, force: Boolean) {
+        val currentRuntime = _uiState.value.modelRuntime
+        if (!force && currentRuntime.modelId == modelId && currentRuntime.status == ModelLoadStatus.LOADED) {
+            return
+        }
+
+        modelProbeJob?.cancel()
+        modelProbeJob = viewModelScope.launch {
+            val model = modelRepository.getModelById(modelId)
+                ?: _uiState.value.availableModels.firstOrNull { it.id == modelId }
+                ?: return@launch
+
+            val modelPath = model.localPath ?: "/data/models/${model.fileName}"
+            _uiState.update { state ->
+                state.copy(
+                    selectedModelInfo = model,
+                    modelRuntime = state.modelRuntime.copy(
+                        modelId = model.id,
+                        modelDisplayName = model.displayName.ifBlank { model.repoId },
+                        status = ModelLoadStatus.LOADING,
+                        backend = runtimeBackendLabelForModel(model.format),
+                        modelPath = modelPath,
+                        loadDurationMs = null,
+                        note = "Loading model into memory...",
+                        lastError = null,
+                    ),
+                )
+            }
+
+            try {
+                val loadDurationMs = engineMutex.withLock {
+                    when (model.format) {
+                        ModelFormat.GGUF -> {
+                            val startedAt = System.nanoTime()
+                            ggufEngine.load(modelPath = modelPath, params = _uiState.value.inferenceParams)
+                            loadedModelId = model.id
+                            ((System.nanoTime() - startedAt) / 1_000_000L).coerceAtLeast(0L)
+                        }
+
+                        ModelFormat.SAFETENSORS -> {
+                            val startedAt = System.nanoTime()
+                            safetensorsEngine.loadModel(modelPath).getOrElse { throw it }
+                            ((System.nanoTime() - startedAt) / 1_000_000L).coerceAtLeast(0L)
+                        }
+
+                        ModelFormat.DIFFUSERS -> {
+                            val startedAt = System.nanoTime()
+                            imageGenEngine.loadModel(modelPath).getOrElse { throw it }
+                            loadedImageModelId = model.id
+                            ((System.nanoTime() - startedAt) / 1_000_000L).coerceAtLeast(0L)
+                        }
+                    }
+                }
+
+                val note = when (model.format) {
+                    ModelFormat.GGUF -> "Model is loaded in memory and ready for text generation."
+                    ModelFormat.SAFETENSORS -> {
+                        val hasGgufFallback = _uiState.value.availableModels.any {
+                            it.format == ModelFormat.GGUF && it.downloadState == DownloadState.DOWNLOADED
+                        }
+                        if (hasGgufFallback) {
+                            "SafeTensors validated. Chat inference will use a GGUF runtime fallback."
+                        } else {
+                            "SafeTensors validated. Download any GGUF model for on-device text generation."
+                        }
+                    }
+
+                    ModelFormat.DIFFUSERS -> "Diffusers model is loaded in memory and ready for image generation."
+                }
+
+                _uiState.update { state ->
+                    state.copy(
+                        modelRuntime = state.modelRuntime.copy(
+                            modelId = model.id,
+                            modelDisplayName = model.displayName.ifBlank { model.repoId },
+                            status = ModelLoadStatus.LOADED,
+                            backend = when (model.format) {
+                                ModelFormat.GGUF -> resolveBackendLabel()
+                                ModelFormat.SAFETENSORS -> "SafeTensors/validator"
+                                ModelFormat.DIFFUSERS -> "Diffusers/ImageGenEngine"
+                            },
+                            modelPath = modelPath,
+                            loadDurationMs = loadDurationMs,
+                            threadCount = state.inferenceParams.numThreads,
+                            contextSize = state.inferenceParams.contextSize ?: 2048,
+                            gpuAccelerationEnabled = gpuAccelerationEnabled,
+                            gpuOffloadLayers = 0,
+                            cpuExecutionEnabled = true,
+                            offloadSummary = buildOffloadSummary(gpuEnabled = gpuAccelerationEnabled, gpuLayers = 0),
+                            note = note,
+                            lastError = null,
+                        ),
+                    )
+                }
+            } catch (e: Exception) {
+                val message = e.message ?: "unknown error"
+                _uiState.update { state ->
+                    state.copy(
+                        error = "Model load failed: $message",
+                        modelRuntime = state.modelRuntime.copy(
+                            modelId = model.id,
+                            modelDisplayName = model.displayName.ifBlank { model.repoId },
+                            status = ModelLoadStatus.ERROR,
+                            backend = runtimeBackendLabelForModel(model.format),
+                            modelPath = modelPath,
+                            loadDurationMs = null,
+                            note = "Model failed to load.",
+                            lastError = message,
+                        ),
+                    )
+                }
+            }
         }
     }
 
@@ -237,7 +425,33 @@ class ChatViewModel @Inject constructor(
                 observeConversation(it.id)
             }
 
+            val selectedModel = resolveSelectedModel(convo)
+                ?: run {
+                    _uiState.update {
+                        it.copy(error = "Download a model in Marketplace before chatting.")
+                    }
+                    return@launch
+                }
+
             _uiState.update { it.copy(inputText = "", currentConversation = convo, error = null) }
+
+            val userMsg = Message(
+                id = UUID.randomUUID().toString(),
+                conversationId = convo.id,
+                role = MessageRole.USER,
+                content = text,
+            )
+            conversationRepository.addMessage(userMsg)
+
+            if (selectedModel.format == ModelFormat.DIFFUSERS) {
+                generateImageResponse(conversation = convo, userText = text, imageModel = selectedModel)
+
+                if (convo.title == "New Conversation") {
+                    val title = text.take(40) + if (text.length > 40) "…" else ""
+                    conversationRepository.updateConversation(convo.copy(title = title))
+                }
+                return@launch
+            }
 
             _uiState.update {
                 it.copy(
@@ -253,14 +467,6 @@ class ChatViewModel @Inject constructor(
 
                 val activeModel = ready.model
                 val targetModelId = activeModel.id
-
-                val userMsg = Message(
-                    id = UUID.randomUUID().toString(),
-                    conversationId = convo.id,
-                    role = MessageRole.USER,
-                    content = text,
-                )
-                conversationRepository.addMessage(userMsg)
 
                 _uiState.update { it.copy(generationStatus = "Processing prompt...") }
 
@@ -339,9 +545,11 @@ class ChatViewModel @Inject constructor(
             } catch (_: CancellationException) {
                 // Explicit stop; keep partial stream out of persisted history.
             } catch (e: Exception) {
+                val details = e.message ?: "unknown error"
+                appendSystemErrorMessage(convo.id, "Generation error: $details")
                 _uiState.update {
                     it.copy(
-                        error = "Generation failed: ${e.message ?: "unknown error"}",
+                        error = "Generation failed: $details",
                     )
                 }
             } finally {
@@ -360,6 +568,126 @@ class ChatViewModel @Inject constructor(
                 conversationRepository.updateConversation(convo.copy(title = title))
             }
         }
+    }
+
+    private suspend fun generateImageResponse(
+        conversation: Conversation,
+        userText: String,
+        imageModel: LlmModel,
+    ) {
+        _uiState.update {
+            it.copy(
+                isGenerating = true,
+                streamingText = "",
+                generationStatus = "Preparing image model...",
+                lastGenerationStats = null,
+            )
+        }
+
+        try {
+            if (conversation.modelId != imageModel.id) {
+                val updated = conversation.copy(
+                    modelId = imageModel.id,
+                    updatedAt = System.currentTimeMillis(),
+                )
+                conversationRepository.updateConversation(updated)
+                _uiState.update { state -> state.copy(currentConversation = updated) }
+            }
+
+            ensureImageEngineReady(imageModel)
+
+            var generatedBitmap: Bitmap? = null
+            imageGenEngine.generate(
+                prompt = userText,
+                negativePrompt = "",
+                steps = 24,
+                cfgScale = 7.5f,
+                width = 512,
+                height = 512,
+            ).collect { progress ->
+                when (progress) {
+                    is ImageGenProgress.Step -> {
+                        _uiState.update {
+                            it.copy(generationStatus = "Generating image... ${progress.current}/${progress.total}")
+                        }
+                    }
+
+                    is ImageGenProgress.Complete -> {
+                        generatedBitmap = progress.bitmap
+                    }
+                }
+            }
+
+            val finalBitmap = generatedBitmap
+                ?: throw IllegalStateException("Image generation finished without output")
+
+            val imagePath = persistGeneratedImage(finalBitmap, conversation.id)
+            val imageMessage = Message(
+                id = UUID.randomUUID().toString(),
+                conversationId = conversation.id,
+                role = MessageRole.IMAGE_GEN,
+                content = "Generated image for: $userText",
+                attachedImagePath = imagePath,
+            )
+            conversationRepository.addMessage(imageMessage)
+        } catch (_: CancellationException) {
+            // Explicit stop from UI.
+        } catch (e: Exception) {
+            val details = e.message ?: "unknown error"
+            appendSystemErrorMessage(conversation.id, "Image generation error: $details")
+            _uiState.update {
+                it.copy(
+                    error = "Image generation failed: $details",
+                )
+            }
+        } finally {
+            _uiState.update {
+                it.copy(
+                    isGenerating = false,
+                    streamingText = "",
+                    generationStatus = null,
+                )
+            }
+        }
+    }
+
+    private suspend fun resolveSelectedModel(conversation: Conversation): LlmModel? {
+        val modelId = _uiState.value.selectedModelId
+            ?: conversation.modelId.takeIf { it.isNotBlank() }
+            ?: _uiState.value.availableModels.firstOrNull()?.id
+            ?: return null
+
+        return modelRepository.getModelById(modelId)
+            ?: _uiState.value.availableModels.firstOrNull { it.id == modelId }
+    }
+
+    private suspend fun ensureImageEngineReady(model: LlmModel) {
+        if (loadedImageModelId == model.id && imageGenEngine.isAvailable()) return
+
+        val path = model.localPath ?: "/data/models/${model.fileName}"
+        imageGenEngine.loadModel(path).getOrElse { throw it }
+        loadedImageModelId = model.id
+    }
+
+    private suspend fun persistGeneratedImage(bitmap: Bitmap, conversationId: String): String =
+        withContext(Dispatchers.IO) {
+            val outputDir = File(appContext.filesDir, "generated/chat/$conversationId").apply { mkdirs() }
+            val outputFile = File(outputDir, "img_${System.currentTimeMillis()}.png")
+            outputFile.outputStream().use { out ->
+                bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+            }
+            outputFile.absolutePath
+        }
+
+    private suspend fun appendSystemErrorMessage(conversationId: String, details: String) {
+        conversationRepository.addMessage(
+            Message(
+                id = UUID.randomUUID().toString(),
+                conversationId = conversationId,
+                role = MessageRole.SYSTEM,
+                content = details,
+            ),
+        )
     }
 
     private fun stopGeneration() {
@@ -444,10 +772,14 @@ class ChatViewModel @Inject constructor(
         val textRuntimeModel = when (model.format) {
             ModelFormat.GGUF -> model
             ModelFormat.SAFETENSORS -> {
-                val fallback = _uiState.value.availableModels.firstOrNull {
+                val sameRepoFallback = _uiState.value.availableModels.firstOrNull {
                     it.downloadState == DownloadState.DOWNLOADED &&
                         it.format == ModelFormat.GGUF &&
                         it.repoId == model.repoId
+                }
+                val fallback = sameRepoFallback ?: _uiState.value.availableModels.firstOrNull {
+                    it.downloadState == DownloadState.DOWNLOADED &&
+                        it.format == ModelFormat.GGUF
                 }
                 if (fallback != null) {
                     fallback
@@ -456,7 +788,7 @@ class ChatViewModel @Inject constructor(
                     safetensorsEngine.loadModel(safePath).getOrElse { throw it }
                     throw IllegalStateException(
                         "SafeTensors weights were validated, but on-device text generation requires GGUF. " +
-                            "Download or convert a GGUF variant for this model.",
+                            "Download any GGUF model (or convert this model to GGUF) and try again.",
                     )
                 }
             }
@@ -469,8 +801,27 @@ class ChatViewModel @Inject constructor(
 
         var loadDurationMs = 0L
         var replayedMessages = 0
+        var resolutionNote: String? = null
+        if (textRuntimeModel.id != model.id) {
+            resolutionNote = "Selected ${model.displayName.ifBlank { model.repoId }} uses GGUF runtime fallback: ${textRuntimeModel.displayName.ifBlank { textRuntimeModel.repoId }}"
+        }
         if (loadedModelId != textRuntimeModel.id || !ggufEngine.isModelLoaded()) {
             val path = textRuntimeModel.localPath ?: "/data/models/${textRuntimeModel.fileName}"
+
+            _uiState.update { state ->
+                state.copy(
+                    modelRuntime = state.modelRuntime.copy(
+                        modelId = textRuntimeModel.id,
+                        modelDisplayName = textRuntimeModel.displayName.ifBlank { textRuntimeModel.repoId },
+                        status = ModelLoadStatus.LOADING,
+                        backend = "GGUF/${GgufEngine.getLoadedNativeLibraryName()}",
+                        modelPath = path,
+                        loadDurationMs = null,
+                        note = "Loading model into memory...",
+                        lastError = null,
+                    ),
+                )
+            }
 
             val loadStartedAtNs = System.nanoTime()
             ggufEngine.load(modelPath = path, params = _uiState.value.inferenceParams)
@@ -487,11 +838,49 @@ class ChatViewModel @Inject constructor(
                 _uiState.update { it.copy(selectedModelId = textRuntimeModel.id) }
             }
         }
+
+        _uiState.update { state ->
+            state.copy(
+                modelRuntime = state.modelRuntime.copy(
+                    modelId = textRuntimeModel.id,
+                    modelDisplayName = textRuntimeModel.displayName.ifBlank { textRuntimeModel.repoId },
+                    status = ModelLoadStatus.LOADED,
+                    backend = resolveBackendLabel(),
+                    modelPath = textRuntimeModel.localPath ?: "/data/models/${textRuntimeModel.fileName}",
+                    loadDurationMs = if (loadDurationMs > 0L) loadDurationMs else state.modelRuntime.loadDurationMs,
+                    threadCount = state.inferenceParams.numThreads,
+                    contextSize = state.inferenceParams.contextSize ?: 2048,
+                    gpuAccelerationEnabled = gpuAccelerationEnabled,
+                    gpuOffloadLayers = 0,
+                    cpuExecutionEnabled = true,
+                    offloadSummary = buildOffloadSummary(gpuEnabled = gpuAccelerationEnabled, gpuLayers = 0),
+                    note = resolutionNote ?: "Model is loaded in memory and ready for text generation.",
+                    lastError = null,
+                ),
+            )
+        }
+
         return EngineReadyResult(
             model = textRuntimeModel,
             loadDurationMs = loadDurationMs,
             replayedMessages = replayedMessages,
         )
+    }
+
+    private fun runtimeBackendLabelForModel(format: ModelFormat): String {
+        return when (format) {
+            ModelFormat.GGUF -> "GGUF/${GgufEngine.getLoadedNativeLibraryName()}"
+            ModelFormat.SAFETENSORS -> "SafeTensors/validator"
+            ModelFormat.DIFFUSERS -> "Diffusers/ImageGenEngine"
+        }
+    }
+
+    private fun buildOffloadSummary(gpuEnabled: Boolean, gpuLayers: Int): String {
+        return if (gpuEnabled) {
+            "GPU acceleration toggle ON • GPU offload layers: $gpuLayers • CPU decode active"
+        } else {
+            "GPU acceleration toggle OFF • GPU offload layers: $gpuLayers • CPU decode active"
+        }
     }
 
     private suspend fun replayConversationContext(

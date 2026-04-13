@@ -1,6 +1,8 @@
 package com.masterllm.feature.chat
 
+import android.graphics.BitmapFactory
 import androidx.compose.animation.*
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -17,6 +19,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -191,6 +194,9 @@ private fun ChatPane(
                 IconButton(onClick = { onAction(ChatAction.ShowModelConfig) }) {
                     Icon(Icons.Default.Settings, contentDescription = "Model settings")
                 }
+                IconButton(onClick = { onAction(ChatAction.RefreshModelRuntime) }) {
+                    Icon(Icons.Default.Refresh, contentDescription = "Refresh model runtime")
+                }
                 if (state.availableModels.isNotEmpty()) {
                     IconButton(onClick = { modelMenuExpanded = true }) {
                         Icon(Icons.Default.ModelTraining, contentDescription = "Select model")
@@ -229,6 +235,19 @@ private fun ChatPane(
             },
             )
         },
+        snackbarHost = {
+            state.error?.let { error ->
+                Snackbar(
+                    action = {
+                        TextButton(onClick = { onAction(ChatAction.DismissError) }) {
+                            Text("Dismiss")
+                        }
+                    },
+                ) {
+                    Text(error)
+                }
+            }
+        },
         bottomBar = {
             ChatInputBar(
                 text = state.inputText,
@@ -247,6 +266,13 @@ private fun ChatPane(
             contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
+            item(key = "runtime_status") {
+                ModelRuntimeCard(
+                    runtime = state.modelRuntime,
+                    onRefresh = { onAction(ChatAction.RefreshModelRuntime) },
+                )
+            }
+
             state.generationStatus?.let { status ->
                 item(key = "generation_status") {
                     GenerationStatusCard(status)
@@ -324,6 +350,94 @@ private fun GenerationStatusCard(status: String) {
 }
 
 @Composable
+private fun ModelRuntimeCard(
+    runtime: ModelRuntimeInfo,
+    onRefresh: () -> Unit,
+) {
+    ElevatedCard(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp),
+    ) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text(
+                    text = "Model Runtime",
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                TextButton(onClick = onRefresh) {
+                    Text("Refresh")
+                }
+            }
+
+            Text(
+                text = "Status: ${runtime.status.label()} • Backend: ${runtime.backend}",
+                style = MaterialTheme.typography.bodySmall,
+                color = when (runtime.status) {
+                    ModelLoadStatus.ERROR -> MaterialTheme.colorScheme.error
+                    ModelLoadStatus.LOADED -> MaterialTheme.colorScheme.primary
+                    else -> MaterialTheme.colorScheme.onSurface
+                },
+            )
+            Text(
+                text = "Model: ${runtime.modelDisplayName}",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            runtime.modelPath?.let { path ->
+                Text(
+                    text = "Path: $path",
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            Text(
+                text = "Threads: ${runtime.threadCount} • Context: ${runtime.contextSize}",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Text(
+                text = runtime.offloadSummary,
+                style = MaterialTheme.typography.bodySmall,
+            )
+            runtime.loadDurationMs?.let {
+                Text(
+                    text = "Load time: ${it} ms",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            Text(
+                text = runtime.note,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f),
+            )
+            runtime.lastError?.let { err ->
+                Text(
+                    text = "Error: $err",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+
+            if (runtime.status == ModelLoadStatus.LOADING) {
+                Spacer(Modifier.height(8.dp))
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+            }
+        }
+    }
+}
+
+private fun ModelLoadStatus.label(): String = when (this) {
+    ModelLoadStatus.IDLE -> "Idle"
+    ModelLoadStatus.LOADING -> "Loading"
+    ModelLoadStatus.LOADED -> "Loaded"
+    ModelLoadStatus.ERROR -> "Error"
+}
+
+@Composable
 private fun GenerationStatsCard(stats: GenerationStats) {
     ElevatedCard(
         modifier = Modifier
@@ -373,6 +487,11 @@ private fun GenerationStatsCard(stats: GenerationStats) {
 @Composable
 private fun MessageBubble(message: Message) {
     val isUser = message.role == MessageRole.USER
+    val imageBitmap = remember(message.attachedImagePath) {
+        message.attachedImagePath
+            ?.takeIf { it.isNotBlank() }
+            ?.let { BitmapFactory.decodeFile(it) }
+    }
     val bubbleColor = if (isUser)
         MaterialTheme.colorScheme.primary
     else
@@ -415,12 +534,31 @@ private fun MessageBubble(message: Message) {
             color = bubbleColor,
             modifier = Modifier.widthIn(max = 300.dp),
         ) {
-            Text(
-                text = message.content,
-                style = MaterialTheme.typography.bodyMedium,
-                color = textColor,
-                modifier = Modifier.padding(12.dp),
-            )
+            Column(modifier = Modifier.padding(12.dp)) {
+                imageBitmap?.let {
+                    Image(
+                        bitmap = it.asImageBitmap(),
+                        contentDescription = "Attached image",
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 320.dp)
+                            .clip(RoundedCornerShape(10.dp)),
+                    )
+                    if (message.content.isNotBlank()) {
+                        Spacer(Modifier.height(8.dp))
+                    }
+                }
+
+                if (message.content.isNotBlank() || imageBitmap == null) {
+                    Text(
+                        text = message.content.ifBlank {
+                            if (message.attachedImagePath != null) "Generated image" else ""
+                        },
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = textColor,
+                    )
+                }
+            }
         }
     }
 }
@@ -518,6 +656,48 @@ private fun ModelConfigurationDialog(
                                 Text(
                                     text = "Size: %.2f GB".format(model.sizeBytes / (1024.0 * 1024.0 * 1024.0)),
                                     style = MaterialTheme.typography.bodySmall,
+                                )
+                            }
+                        }
+                    }
+                }
+
+                item {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                        ),
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp)) {
+                            Text(
+                                text = "Runtime state",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            Text(
+                                text = "Status: ${state.modelRuntime.status.label()}",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                            Text(
+                                text = "Backend: ${state.modelRuntime.backend}",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                            Text(
+                                text = state.modelRuntime.offloadSummary,
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                            state.modelRuntime.loadDurationMs?.let {
+                                Text(
+                                    text = "Load time: ${it} ms",
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
+                            }
+                            state.modelRuntime.lastError?.let { err ->
+                                Text(
+                                    text = "Error: $err",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.error,
                                 )
                             }
                         }
