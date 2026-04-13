@@ -390,20 +390,7 @@ val elapsedMs = ((completedAtNs - startedAtNs) / 1_000_000L).coerceAtLeast(1L)
 
         if (loadedModelId != model.id || !ggufEngine.isModelLoaded()) {
             val path = model.localPath ?: "/data/models/${model.fileName}"
-            val params = _uiState.value.inferenceParams
-            ggufEngine.load(
-                modelPath = path,
-                params = com.masterllm.runtime.gguf.InferenceParams(
-                    minP = params.minP,
-                    temperature = params.temperature,
-                    storeChats = params.storeChats,
-                    contextSize = params.contextSize?.toLong() ?: 2048L,
-                    chatTemplate = params.systemPrompt,
-                    numThreads = params.numThreads,
-                    useMmap = true,
-                    useMlock = false
-                )
-            )
+            ggufEngine.load(modelPath = path)
             loadedModelId = model.id
         }
         return model

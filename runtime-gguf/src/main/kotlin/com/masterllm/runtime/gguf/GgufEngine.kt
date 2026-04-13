@@ -121,14 +121,14 @@ class GgufEngine @Inject constructor(
         
         nativePtr = loadModel(
             modelPath,
-            minP = 0.1f,
-            temperature = params.temperature,
-            storeChats = true,
+            0.1f,  // minP
+            params.temperature,
+            true,  // storeChats
             actualContextSize,
             actualChatTemplate,
-            numThreads = 4,
-            useMmap = true,
-            useMlock = false,
+            4,     // nThreads
+            true,  // useMmap
+            false, // useMlock
         )
         
         isLoaded = nativePtr != 0L
