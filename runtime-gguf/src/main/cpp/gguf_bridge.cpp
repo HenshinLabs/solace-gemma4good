@@ -12,6 +12,7 @@ Java_com_masterllm_runtime_gguf_GgufEngine_loadModel(
     jlong contextSize,
     jstring chatTemplate,
     jint nThreads,
+    jint nGpuLayers,
     jboolean useMmap,
     jboolean useMlock
 ) {
@@ -29,6 +30,7 @@ Java_com_masterllm_runtime_gguf_GgufEngine_loadModel(
             contextSize,
             chatTemplateCstr,
             nThreads,
+            nGpuLayers,
             useMmap,
             useMlock
         );
@@ -71,6 +73,36 @@ Java_com_masterllm_runtime_gguf_GgufEngine_getResponseGenerationSpeed(
 ) {
     auto* llmInference = reinterpret_cast<LLMInference*>(modelPtr);
     return llmInference->getResponseGenerationTime();
+}
+
+extern "C" JNIEXPORT jfloat JNICALL
+Java_com_masterllm_runtime_gguf_GgufEngine_getPromptProcessingSpeed(
+    JNIEnv* /*env*/,
+    jobject /*thiz*/,
+    jlong modelPtr
+) {
+    auto* llmInference = reinterpret_cast<LLMInference*>(modelPtr);
+    return llmInference->getPromptProcessingSpeed();
+}
+
+extern "C" JNIEXPORT jint JNICALL
+Java_com_masterllm_runtime_gguf_GgufEngine_getConfiguredThreadCount(
+    JNIEnv* /*env*/,
+    jobject /*thiz*/,
+    jlong modelPtr
+) {
+    auto* llmInference = reinterpret_cast<LLMInference*>(modelPtr);
+    return llmInference->getConfiguredThreads();
+}
+
+extern "C" JNIEXPORT jint JNICALL
+Java_com_masterllm_runtime_gguf_GgufEngine_getConfiguredGpuLayers(
+    JNIEnv* /*env*/,
+    jobject /*thiz*/,
+    jlong modelPtr
+) {
+    auto* llmInference = reinterpret_cast<LLMInference*>(modelPtr);
+    return llmInference->getConfiguredGpuLayers();
 }
 
 extern "C" JNIEXPORT jint JNICALL

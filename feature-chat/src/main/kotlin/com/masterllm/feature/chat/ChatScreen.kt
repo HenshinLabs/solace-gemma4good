@@ -7,6 +7,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
@@ -20,6 +21,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -197,6 +201,12 @@ private fun ChatPane(
                 IconButton(onClick = { onAction(ChatAction.RefreshModelRuntime) }) {
                     Icon(Icons.Default.Refresh, contentDescription = "Refresh model runtime")
                 }
+                IconButton(
+                    onClick = { onAction(ChatAction.RunBenchmark) },
+                    enabled = !state.benchmarkRunning && !state.isGenerating,
+                ) {
+                    Icon(Icons.Default.Speed, contentDescription = "Run benchmark")
+                }
                 if (state.availableModels.isNotEmpty()) {
                     IconButton(onClick = { modelMenuExpanded = true }) {
                         Icon(Icons.Default.ModelTraining, contentDescription = "Select model")
@@ -255,6 +265,14 @@ private fun ChatPane(
                 onTextChange = { onAction(ChatAction.InputChanged(it)) },
                 onSend = { onAction(ChatAction.SendMessage) },
                 onStop = { onAction(ChatAction.StopGeneration) },
+                onApplyTaskTemplate = {
+                    onAction(
+                        ChatAction.ApplyTaskTemplate(
+                            systemPrompt = it.systemPrompt,
+                            starterPrompt = it.starterPrompt,
+                        )
+                    )
+                },
             )
         },
     ) { padding ->
@@ -271,6 +289,21 @@ private fun ChatPane(
                     runtime = state.modelRuntime,
                     onRefresh = { onAction(ChatAction.RefreshModelRuntime) },
                 )
+            }
+
+            if (state.benchmarkRunning) {
+                item(key = "benchmark_running") {
+                    BenchmarkRunningCard()
+                }
+            }
+
+            state.benchmarkResult?.let { result ->
+                item(key = "benchmark_result") {
+                    BenchmarkResultCard(
+                        result = result,
+                        onDismiss = { onAction(ChatAction.ClearBenchmarkResult) },
+                    )
+                }
             }
 
             state.generationStatus?.let { status ->
@@ -474,7 +507,12 @@ private fun GenerationStatsCard(stats: GenerationStats) {
                 style = MaterialTheme.typography.bodySmall,
             )
             Text(
-                text = "Decode speed: ${"%.2f".format(stats.decodeTokensPerSecond)} tok/s | Native speed: ${"%.2f".format(stats.nativeTokensPerSecond)} tok/s",
+                text = "Prompt speed: ${"%.2f".format(stats.promptTokensPerSecond)} tok/s | Native prompt: ${"%.2f".format(stats.nativePromptTokensPerSecond)} tok/s",
+                style = MaterialTheme.typography.bodySmall,
+                fontWeight = FontWeight.Medium,
+            )
+            Text(
+                text = "Decode speed: ${"%.2f".format(stats.decodeTokensPerSecond)} tok/s | Native decode: ${"%.2f".format(stats.nativeTokensPerSecond)} tok/s",
                 style = MaterialTheme.typography.bodySmall,
                 fontWeight = FontWeight.Medium,
             )
@@ -482,11 +520,93 @@ private fun GenerationStatsCard(stats: GenerationStats) {
     }
 }
 
+@Composable
+private fun BenchmarkRunningCard() {
+    ElevatedCard(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(16.dp),
+                strokeWidth = 2.dp,
+            )
+            Spacer(Modifier.width(10.dp))
+            Text(
+                text = "Running benchmark (pp=512, tg=128)...",
+                style = MaterialTheme.typography.bodySmall,
+                fontWeight = FontWeight.Medium,
+            )
+        }
+    }
+}
+
+@Composable
+private fun BenchmarkResultCard(
+    result: String,
+    onDismiss: () -> Unit,
+) {
+    val pp = remember(result) { extractBenchmarkMetric(result, "pp") }
+    val tg = remember(result) { extractBenchmarkMetric(result, "tg") }
+
+    ElevatedCard(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp),
+    ) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text(
+                    text = "Benchmark",
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                IconButton(onClick = onDismiss) {
+                    Icon(Icons.Default.Close, contentDescription = "Dismiss benchmark")
+                }
+            }
+            Text(
+                text = "PP (tokens/s): $pp",
+                style = MaterialTheme.typography.bodySmall,
+                fontWeight = FontWeight.Medium,
+            )
+            Text(
+                text = "TG (tokens/s): $tg",
+                style = MaterialTheme.typography.bodySmall,
+                fontWeight = FontWeight.Medium,
+            )
+            Spacer(Modifier.height(6.dp))
+            Text(
+                text = "Raw output:\n$result",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f),
+            )
+        }
+    }
+}
+
+private fun extractBenchmarkMetric(result: String, marker: String): String {
+    val line = result.lineSequence().firstOrNull { it.contains("| $marker ") } ?: return "N/A"
+    return line
+        .split("|")
+        .getOrNull(6)
+        ?.trim()
+        ?.takeIf { it.isNotEmpty() }
+        ?: "N/A"
+}
+
 // ─── Message Bubble ─────────────────────────────────────────────
 
 @Composable
 private fun MessageBubble(message: Message) {
     val isUser = message.role == MessageRole.USER
+    val clipboard = LocalClipboardManager.current
     val imageBitmap = remember(message.attachedImagePath) {
         message.attachedImagePath
             ?.takeIf { it.isNotBlank() }
@@ -550,13 +670,25 @@ private fun MessageBubble(message: Message) {
                 }
 
                 if (message.content.isNotBlank() || imageBitmap == null) {
-                    Text(
-                        text = message.content.ifBlank {
-                            if (message.attachedImagePath != null) "Generated image" else ""
-                        },
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = textColor,
-                    )
+                    val finalText = message.content.ifBlank {
+                        if (message.attachedImagePath != null) "Generated image" else ""
+                    }
+                    if (!isUser && !message.isStreaming && finalText.isNotBlank()) {
+                        MarkdownMessageText(
+                            markdown = finalText,
+                            textColor = textColor.toArgb(),
+                            modifier = Modifier.fillMaxWidth(),
+                            onLongClick = {
+                                clipboard.setText(AnnotatedString(message.content))
+                            },
+                        )
+                    } else {
+                        Text(
+                            text = finalText,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = textColor,
+                        )
+                    }
                 }
             }
         }
@@ -565,6 +697,35 @@ private fun MessageBubble(message: Message) {
 
 // ─── Input Bar ──────────────────────────────────────────────────
 
+private data class QuickTaskTemplate(
+    val title: String,
+    val systemPrompt: String,
+    val starterPrompt: String,
+)
+
+private val quickTaskTemplates = listOf(
+    QuickTaskTemplate(
+        title = "Summarize",
+        systemPrompt = "You are a concise summarization assistant. Prefer bullet points and preserve key facts.",
+        starterPrompt = "Summarize this in 5 bullet points:\n\n",
+    ),
+    QuickTaskTemplate(
+        title = "Explain",
+        systemPrompt = "You explain concepts clearly for a mixed technical audience. Use examples and avoid jargon where possible.",
+        starterPrompt = "Explain this step-by-step:\n\n",
+    ),
+    QuickTaskTemplate(
+        title = "Refactor",
+        systemPrompt = "You are a senior engineer focused on safe refactors. Keep behavior identical and justify each change.",
+        starterPrompt = "Refactor this code and explain the improvements:\n\n",
+    ),
+    QuickTaskTemplate(
+        title = "Debug",
+        systemPrompt = "You are a debugging assistant. Identify root cause, propose minimal fix, and suggest verification steps.",
+        starterPrompt = "Find the bug and propose a fix for:\n\n",
+    ),
+)
+
 @Composable
 private fun ChatInputBar(
     text: String,
@@ -572,42 +733,62 @@ private fun ChatInputBar(
     onTextChange: (String) -> Unit,
     onSend: () -> Unit,
     onStop: () -> Unit,
+    onApplyTaskTemplate: (QuickTaskTemplate) -> Unit,
 ) {
     Surface(
         shadowElevation = 8.dp,
         color = MaterialTheme.colorScheme.surface,
     ) {
-        Row(
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
+            verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            OutlinedTextField(
-                value = text,
-                onValueChange = onTextChange,
-                modifier = Modifier.weight(1f),
-                placeholder = { Text("Type a message…") },
-                shape = RoundedCornerShape(24.dp),
-                maxLines = 4,
-                enabled = !isGenerating,
-            )
-            Spacer(Modifier.width(8.dp))
-            if (isGenerating) {
-                FilledIconButton(
-                    onClick = onStop,
-                    colors = IconButtonDefaults.filledIconButtonColors(
-                        containerColor = MaterialTheme.colorScheme.error,
-                    ),
-                ) {
-                    Icon(Icons.Default.Stop, contentDescription = "Stop")
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(quickTaskTemplates, key = { it.title }) { template ->
+                    AssistChip(
+                        onClick = { onApplyTaskTemplate(template) },
+                        label = { Text(template.title) },
+                        leadingIcon = {
+                            Icon(
+                                imageVector = Icons.Default.Bolt,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp),
+                            )
+                        },
+                        enabled = !isGenerating,
+                    )
                 }
-            } else {
-                FilledIconButton(
-                    onClick = onSend,
-                    enabled = text.isNotBlank(),
-                ) {
-                    Icon(Icons.Default.Send, contentDescription = "Send")
+            }
+
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = onTextChange,
+                    modifier = Modifier.weight(1f),
+                    placeholder = { Text("Type a message…") },
+                    shape = RoundedCornerShape(24.dp),
+                    maxLines = 4,
+                    enabled = !isGenerating,
+                )
+                Spacer(Modifier.width(8.dp))
+                if (isGenerating) {
+                    FilledIconButton(
+                        onClick = onStop,
+                        colors = IconButtonDefaults.filledIconButtonColors(
+                            containerColor = MaterialTheme.colorScheme.error,
+                        ),
+                    ) {
+                        Icon(Icons.Default.Stop, contentDescription = "Stop")
+                    }
+                } else {
+                    FilledIconButton(
+                        onClick = onSend,
+                        enabled = text.isNotBlank(),
+                    ) {
+                        Icon(Icons.Default.Send, contentDescription = "Send")
+                    }
                 }
             }
         }

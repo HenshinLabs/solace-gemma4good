@@ -20,12 +20,13 @@ Java_com_masterllm_runtime_gguf_GgufEngine_loadModel(
     jlong contextSize,
     jstring chatTemplate,
     jint nThreads,
+    jint nGpuLayers,
     jboolean useMmap,
     jboolean useMlock
 ) {
     const char* path = env->GetStringUTFChars(modelPath, nullptr);
     LOGI("Loading model (stub): %s", path);
-    LOGI("Params: minP=%f, temp=%f, threads=%d, ctx=%ld", minP, temperature, nThreads, contextSize);
+    LOGI("Params: minP=%f, temp=%f, threads=%d, gpuLayers=%d, ctx=%ld", minP, temperature, nThreads, nGpuLayers, contextSize);
     env->ReleaseStringUTFChars(modelPath, path);
     
     // Return a dummy handle
@@ -54,6 +55,33 @@ Java_com_masterllm_runtime_gguf_GgufEngine_getResponseGenerationSpeed(
     jlong modelPtr
 ) {
     return 0.0f;
+}
+
+extern "C" JNIEXPORT jfloat JNICALL
+Java_com_masterllm_runtime_gguf_GgufEngine_getPromptProcessingSpeed(
+    JNIEnv* /*env*/,
+    jobject /*thiz*/,
+    jlong modelPtr
+) {
+    return 0.0f;
+}
+
+extern "C" JNIEXPORT jint JNICALL
+Java_com_masterllm_runtime_gguf_GgufEngine_getConfiguredThreadCount(
+    JNIEnv* /*env*/,
+    jobject /*thiz*/,
+    jlong modelPtr
+) {
+    return 0;
+}
+
+extern "C" JNIEXPORT jint JNICALL
+Java_com_masterllm_runtime_gguf_GgufEngine_getConfiguredGpuLayers(
+    JNIEnv* /*env*/,
+    jobject /*thiz*/,
+    jlong modelPtr
+) {
+    return 0;
 }
 
 extern "C" JNIEXPORT jint JNICALL

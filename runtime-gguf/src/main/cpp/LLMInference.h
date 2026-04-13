@@ -31,9 +31,13 @@ private:
     bool _generationReachedEog = false;
     
     bool _storeChats = true;
-    int64_t _responseGenerationTime = 0;
+    int64_t _promptProcessingTimeUs = 0;
+    long _promptProcessingTokens = 0;
+    int64_t _responseGenerationTimeUs = 0;
     long _responseNumTokens = 0;
     int _nCtxUsed = 0;
+    int _configuredThreads = 0;
+    int _configuredGpuLayers = 0;
     
     bool _isValidUtf8(const char* response);
     
@@ -53,12 +57,16 @@ public:
         long contextSize,
         const char* chatTemplate,
         int nThreads,
+        int nGpuLayers,
         bool useMmap,
         bool useMlock
     );
     
     void addChatMessage(const char* message, const char* role);
     float getResponseGenerationTime() const;
+    float getPromptProcessingSpeed() const;
+    int getConfiguredThreads() const { return _configuredThreads; }
+    int getConfiguredGpuLayers() const { return _configuredGpuLayers; }
     int getContextSizeUsed() const { return _nCtxUsed; }
     
     void startCompletion(const char* query);

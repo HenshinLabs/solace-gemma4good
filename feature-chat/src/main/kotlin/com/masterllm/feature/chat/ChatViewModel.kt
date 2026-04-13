@@ -43,6 +43,8 @@ data class GenerationStats(
     val generatedChars: Int,
     val firstTokenLatencyMs: Long,
     val durationMs: Long,
+    val promptTokensPerSecond: Double,
+    val nativePromptTokensPerSecond: Float,
     val decodeTokensPerSecond: Double,
     val nativeTokensPerSecond: Float,
     val threadCount: Int,
@@ -92,6 +94,8 @@ data class ChatUiState(
     val showModelConfig: Boolean = false,
     val selectedModelInfo: LlmModel? = null,
     val modelRuntime: ModelRuntimeInfo = ModelRuntimeInfo(),
+    val benchmarkRunning: Boolean = false,
+    val benchmarkResult: String? = null,
 )
 
 sealed interface ChatAction {
@@ -114,6 +118,9 @@ sealed interface ChatAction {
     data class UpdateMaxTokens(val value: Int) : ChatAction
     data class UpdateSystemPrompt(val value: String) : ChatAction
     data object ResetInferenceParams : ChatAction
+    data class ApplyTaskTemplate(val systemPrompt: String, val starterPrompt: String) : ChatAction
+    data object RunBenchmark : ChatAction
+    data object ClearBenchmarkResult : ChatAction
 }
 
 @HiltViewModel
@@ -138,6 +145,7 @@ class ChatViewModel @Inject constructor(
 
     private var messagesJob: Job? = null
     private var generationJob: Job? = null
+    private var benchmarkJob: Job? = null
     private var modelProbeJob: Job? = null
     private var loadedModelId: String? = null
     private var loadedImageModelId: String? = null
@@ -191,6 +199,7 @@ class ChatViewModel @Inject constructor(
                 .collect { (threadCount, gpuEnabled) ->
                     gpuAccelerationEnabled = gpuEnabled
                     val normalizedThreads = threadCount.coerceAtLeast(1)
+                    val desiredGpuLayers = resolveDesiredGpuLayers()
                     // Update inference params with thread count
                     _uiState.update { state ->
                         state.copy(
@@ -201,8 +210,8 @@ class ChatViewModel @Inject constructor(
                                 threadCount = normalizedThreads,
                                 contextSize = state.inferenceParams.contextSize ?: 2048,
                                 gpuAccelerationEnabled = gpuEnabled,
-                                gpuOffloadLayers = 0,
-                                offloadSummary = buildOffloadSummary(gpuEnabled = gpuEnabled, gpuLayers = 0),
+                                gpuOffloadLayers = desiredGpuLayers,
+                                offloadSummary = buildOffloadSummary(gpuEnabled = gpuEnabled, gpuLayers = desiredGpuLayers),
                             ),
                         )
                     }
@@ -237,6 +246,9 @@ class ChatViewModel @Inject constructor(
             is ChatAction.UpdateMaxTokens -> updateInferenceParams { it.copy(maxTokens = action.value) }
             is ChatAction.UpdateSystemPrompt -> updateInferenceParams { it.copy(systemPrompt = action.value) }
             ChatAction.ResetInferenceParams -> _uiState.update { it.copy(inferenceParams = InferenceParams()) }
+            is ChatAction.ApplyTaskTemplate -> applyTaskTemplate(action.systemPrompt, action.starterPrompt)
+            ChatAction.RunBenchmark -> runBenchmark()
+            ChatAction.ClearBenchmarkResult -> _uiState.update { it.copy(benchmarkResult = null) }
         }
     }
 
@@ -314,7 +326,12 @@ class ChatViewModel @Inject constructor(
                     when (model.format) {
                         ModelFormat.GGUF -> {
                             val startedAt = System.nanoTime()
-                            ggufEngine.load(modelPath = modelPath, params = _uiState.value.inferenceParams)
+                            ggufEngine.load(
+                                modelPath = modelPath,
+                                params = _uiState.value.inferenceParams,
+                                gpuAccelerationEnabled = gpuAccelerationEnabled,
+                                gpuOffloadLayers = resolveDesiredGpuLayers(),
+                            )
                             loadedModelId = model.id
                             ((System.nanoTime() - startedAt) / 1_000_000L).coerceAtLeast(0L)
                         }
@@ -337,17 +354,30 @@ class ChatViewModel @Inject constructor(
                 val note = when (model.format) {
                     ModelFormat.GGUF -> "Model is loaded in memory and ready for text generation."
                     ModelFormat.SAFETENSORS -> {
-                        val hasGgufFallback = _uiState.value.availableModels.any {
-                            it.format == ModelFormat.GGUF && it.downloadState == DownloadState.DOWNLOADED
-                        }
-                        if (hasGgufFallback) {
-                            "SafeTensors validated. Chat inference will use a GGUF runtime fallback."
+                        val sameRepoFallback = TextRuntimeModelResolver.findSameRepoGgufFallback(
+                            selectedModel = model,
+                            availableModels = _uiState.value.availableModels,
+                        )
+                        if (sameRepoFallback != null) {
+                            val fallbackName = sameRepoFallback.displayName.ifBlank { sameRepoFallback.repoId }
+                            "SafeTensors validated. Chat inference will use same-repo GGUF fallback: $fallbackName"
                         } else {
-                            "SafeTensors validated. Download any GGUF model for on-device text generation (automatic SafeTensors conversion is not available on-device)."
+                            "SafeTensors validated. Download a GGUF variant from the same repo, or convert this model offline with llama.cpp convert_hf_to_gguf.py."
                         }
                     }
 
                     ModelFormat.DIFFUSERS -> "Diffusers model is loaded in memory and ready for image generation."
+                }
+
+                val activeThreads = if (model.format == ModelFormat.GGUF && ggufEngine.isModelLoaded()) {
+                    ggufEngine.getConfiguredThreadCount().coerceAtLeast(1)
+                } else {
+                    _uiState.value.inferenceParams.numThreads
+                }
+                val activeGpuLayers = if (model.format == ModelFormat.GGUF && ggufEngine.isModelLoaded()) {
+                    ggufEngine.getConfiguredGpuLayers().coerceAtLeast(0)
+                } else {
+                    0
                 }
 
                 _uiState.update { state ->
@@ -363,12 +393,12 @@ class ChatViewModel @Inject constructor(
                             },
                             modelPath = modelPath,
                             loadDurationMs = loadDurationMs,
-                            threadCount = state.inferenceParams.numThreads,
+                            threadCount = activeThreads,
                             contextSize = state.inferenceParams.contextSize ?: 2048,
                             gpuAccelerationEnabled = gpuAccelerationEnabled,
-                            gpuOffloadLayers = 0,
+                            gpuOffloadLayers = activeGpuLayers,
                             cpuExecutionEnabled = true,
-                            offloadSummary = buildOffloadSummary(gpuEnabled = gpuAccelerationEnabled, gpuLayers = 0),
+                            offloadSummary = buildOffloadSummary(gpuEnabled = gpuAccelerationEnabled, gpuLayers = activeGpuLayers),
                             note = note,
                             lastError = null,
                         ),
@@ -411,6 +441,97 @@ class ChatViewModel @Inject constructor(
     private fun updateInferenceParams(update: (InferenceParams) -> InferenceParams) {
         _uiState.update { state ->
             state.copy(inferenceParams = update(state.inferenceParams))
+        }
+    }
+
+    private fun applyTaskTemplate(systemPrompt: String, starterPrompt: String) {
+        _uiState.update { state ->
+            state.copy(
+                inputText = starterPrompt,
+                inferenceParams = state.inferenceParams.copy(systemPrompt = systemPrompt),
+            )
+        }
+    }
+
+    private fun runBenchmark() {
+        benchmarkJob?.cancel()
+        benchmarkJob = viewModelScope.launch {
+            if (_uiState.value.isGenerating) {
+                _uiState.update { it.copy(error = "Stop active generation before running benchmark.") }
+                return@launch
+            }
+
+            val selectedModelId = _uiState.value.selectedModelId
+            val selectedModel = selectedModelId
+                ?.let { modelRepository.getModelById(it) }
+                ?: _uiState.value.availableModels.firstOrNull { it.id == selectedModelId }
+
+            if (selectedModel == null) {
+                _uiState.update { it.copy(error = "Select a model before running benchmark.") }
+                return@launch
+            }
+
+            if (selectedModel.format != ModelFormat.GGUF) {
+                _uiState.update {
+                    it.copy(error = "Benchmark is available only for GGUF text models.")
+                }
+                return@launch
+            }
+
+            _uiState.update {
+                it.copy(
+                    benchmarkRunning = true,
+                    benchmarkResult = null,
+                    error = null,
+                )
+            }
+
+            try {
+                val benchmarkResult = withContext(Dispatchers.Default) {
+                    engineMutex.withLock {
+                        if (!ggufEngine.isModelLoaded() || loadedModelId != selectedModel.id) {
+                            val modelPath = selectedModel.localPath ?: "/data/models/${selectedModel.fileName}"
+                            ggufEngine.load(
+                                modelPath = modelPath,
+                                params = _uiState.value.inferenceParams,
+                                gpuAccelerationEnabled = gpuAccelerationEnabled,
+                                gpuOffloadLayers = resolveDesiredGpuLayers(),
+                            )
+                            loadedModelId = selectedModel.id
+                        }
+
+                        ggufEngine.benchModel(pp = 512, tg = 128, pl = 0, nr = 1).trim()
+                    }
+                }
+
+                val activeThreads = ggufEngine.getConfiguredThreadCount().coerceAtLeast(1)
+                val activeGpuLayers = ggufEngine.getConfiguredGpuLayers().coerceAtLeast(0)
+
+                _uiState.update { state ->
+                    state.copy(
+                        benchmarkRunning = false,
+                        benchmarkResult = benchmarkResult,
+                        modelRuntime = state.modelRuntime.copy(
+                            modelId = selectedModel.id,
+                            modelDisplayName = selectedModel.displayName.ifBlank { selectedModel.repoId },
+                            status = ModelLoadStatus.LOADED,
+                            backend = resolveBackendLabel(),
+                            threadCount = activeThreads,
+                            gpuOffloadLayers = activeGpuLayers,
+                            offloadSummary = buildOffloadSummary(gpuEnabled = gpuAccelerationEnabled, gpuLayers = activeGpuLayers),
+                            note = "Benchmark completed (pp=512, tg=128).",
+                            lastError = null,
+                        ),
+                    )
+                }
+            } catch (e: Exception) {
+                _uiState.update {
+                    it.copy(
+                        benchmarkRunning = false,
+                        error = "Benchmark failed: ${e.message ?: "unknown error"}",
+                    )
+                }
+            }
         }
     }
 
@@ -514,12 +635,20 @@ class ChatViewModel @Inject constructor(
                     ?.let { ((completedAtNs - it) / 1_000_000L).coerceAtLeast(1L) }
                     ?: totalElapsedMs
                 val generatedTokens = (ggufEngine.getContextLengthUsed() - promptTokens).coerceAtLeast(0)
+                val promptTokensPerSecond = if (firstTokenLatencyMs > 0) {
+                    promptTokens.toDouble() / (firstTokenLatencyMs / 1000.0)
+                } else {
+                    0.0
+                }
                 val decodeTokensPerSecond = if (decodeElapsedMs > 0) {
                     generatedTokens.toDouble() / (decodeElapsedMs / 1000.0)
                 } else {
                     0.0
                 }
                 val nativeSpeed = ggufEngine.getResponseGenerationSpeed()
+                val nativePromptSpeed = ggufEngine.getPromptProcessingSpeed()
+                val activeThreads = ggufEngine.getConfiguredThreadCount().coerceAtLeast(1)
+                val activeGpuLayers = ggufEngine.getConfiguredGpuLayers().coerceAtLeast(0)
 
                 _uiState.update { state ->
                     state.copy(
@@ -533,10 +662,12 @@ class ChatViewModel @Inject constructor(
                             generatedChars = finalText.length,
                             firstTokenLatencyMs = firstTokenLatencyMs,
                             durationMs = totalElapsedMs,
+                            promptTokensPerSecond = promptTokensPerSecond,
+                            nativePromptTokensPerSecond = nativePromptSpeed,
                             decodeTokensPerSecond = decodeTokensPerSecond,
                             nativeTokensPerSecond = nativeSpeed,
-                            threadCount = state.inferenceParams.numThreads,
-                            gpuLayers = 0,
+                            threadCount = activeThreads,
+                            gpuLayers = activeGpuLayers,
                             contextSize = state.inferenceParams.contextSize ?: 2048,
                         ),
                     )
@@ -774,42 +905,16 @@ class ChatViewModel @Inject constructor(
             ?: _uiState.value.availableModels.firstOrNull { it.id == modelId }
             ?: return null
 
-        val textRuntimeModel = when (model.format) {
-            ModelFormat.GGUF -> model
-            ModelFormat.SAFETENSORS -> {
-                val sameRepoFallback = _uiState.value.availableModels.firstOrNull {
-                    it.downloadState == DownloadState.DOWNLOADED &&
-                        it.format == ModelFormat.GGUF &&
-                        it.repoId == model.repoId
-                }
-                val fallback = sameRepoFallback ?: _uiState.value.availableModels.firstOrNull {
-                    it.downloadState == DownloadState.DOWNLOADED &&
-                        it.format == ModelFormat.GGUF
-                }
-                if (fallback != null) {
-                    fallback
-                } else {
-                    val safePath = model.localPath ?: "/data/models/${model.fileName}"
-                    safetensorsEngine.loadModel(safePath).getOrElse { throw it }
-                    throw IllegalStateException(
-                        "SafeTensors weights were validated, but on-device text generation requires GGUF. " +
-                            "Download any GGUF model (or convert this model to GGUF offline) and try again.",
-                    )
-                }
-            }
-            ModelFormat.DIFFUSERS -> {
-                throw IllegalStateException(
-                    "Selected model is DIFFUSERS. Text generation requires GGUF.",
-                )
-            }
-        }
+        val resolution = TextRuntimeModelResolver.resolveForTextGeneration(
+            selectedModel = model,
+            availableModels = _uiState.value.availableModels,
+            contextLabel = "chat text inference",
+        )
+        val textRuntimeModel = resolution.runtimeModel
 
         var loadDurationMs = 0L
         var replayedMessages = 0
-        var resolutionNote: String? = null
-        if (textRuntimeModel.id != model.id) {
-            resolutionNote = "Selected ${model.displayName.ifBlank { model.repoId }} uses GGUF runtime fallback: ${textRuntimeModel.displayName.ifBlank { textRuntimeModel.repoId }}"
-        }
+        var resolutionNote: String? = resolution.resolutionNote
         if (loadedModelId != textRuntimeModel.id || !ggufEngine.isModelLoaded()) {
             val path = textRuntimeModel.localPath ?: "/data/models/${textRuntimeModel.fileName}"
 
@@ -829,7 +934,12 @@ class ChatViewModel @Inject constructor(
             }
 
             val loadStartedAtNs = System.nanoTime()
-            ggufEngine.load(modelPath = path, params = _uiState.value.inferenceParams)
+            ggufEngine.load(
+                modelPath = path,
+                params = _uiState.value.inferenceParams,
+                gpuAccelerationEnabled = gpuAccelerationEnabled,
+                gpuOffloadLayers = resolveDesiredGpuLayers(),
+            )
             loadDurationMs = ((System.nanoTime() - loadStartedAtNs) / 1_000_000L).coerceAtLeast(0L)
 
             replayedMessages = replayConversationContext(
@@ -845,6 +955,16 @@ class ChatViewModel @Inject constructor(
         }
 
         _uiState.update { state ->
+            val activeThreads = if (ggufEngine.isModelLoaded()) {
+                ggufEngine.getConfiguredThreadCount().coerceAtLeast(1)
+            } else {
+                state.inferenceParams.numThreads
+            }
+            val activeGpuLayers = if (ggufEngine.isModelLoaded()) {
+                ggufEngine.getConfiguredGpuLayers().coerceAtLeast(0)
+            } else {
+                resolveDesiredGpuLayers()
+            }
             state.copy(
                 modelRuntime = state.modelRuntime.copy(
                     modelId = textRuntimeModel.id,
@@ -853,12 +973,12 @@ class ChatViewModel @Inject constructor(
                     backend = resolveBackendLabel(),
                     modelPath = textRuntimeModel.localPath ?: "/data/models/${textRuntimeModel.fileName}",
                     loadDurationMs = if (loadDurationMs > 0L) loadDurationMs else state.modelRuntime.loadDurationMs,
-                    threadCount = state.inferenceParams.numThreads,
+                    threadCount = activeThreads,
                     contextSize = state.inferenceParams.contextSize ?: 2048,
                     gpuAccelerationEnabled = gpuAccelerationEnabled,
-                    gpuOffloadLayers = 0,
+                    gpuOffloadLayers = activeGpuLayers,
                     cpuExecutionEnabled = true,
-                    offloadSummary = buildOffloadSummary(gpuEnabled = gpuAccelerationEnabled, gpuLayers = 0),
+                    offloadSummary = buildOffloadSummary(gpuEnabled = gpuAccelerationEnabled, gpuLayers = activeGpuLayers),
                     note = resolutionNote ?: "Model is loaded in memory and ready for text generation.",
                     lastError = null,
                 ),
@@ -881,12 +1001,16 @@ class ChatViewModel @Inject constructor(
     }
 
     private fun buildOffloadSummary(gpuEnabled: Boolean, gpuLayers: Int): String {
-        return if (gpuEnabled) {
-            "GPU acceleration toggle ON • GPU offload layers: $gpuLayers • CPU decode active"
+        return if (gpuEnabled && gpuLayers > 0) {
+            "GPU acceleration ON • offloaded layers: $gpuLayers • hybrid CPU+GPU decode"
+        } else if (gpuEnabled) {
+            "GPU acceleration ON • no layers offloaded (CPU fallback)"
         } else {
-            "GPU acceleration toggle OFF • GPU offload layers: $gpuLayers • CPU decode active"
+            "GPU acceleration OFF • CPU decode active"
         }
     }
+
+    private fun resolveDesiredGpuLayers(): Int = if (gpuAccelerationEnabled) 99 else 0
 
     private suspend fun replayConversationContext(
         conversationId: String,

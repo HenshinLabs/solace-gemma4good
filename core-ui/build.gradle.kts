@@ -46,4 +46,8 @@ dependencies {
 
     // Lifecycle
     implementation(libs.lifecycle.runtime.compose)
+
+    // Markdown rendering
+    implementation(libs.markwon.core)
+    implementation(libs.markwon.linkify)
 }

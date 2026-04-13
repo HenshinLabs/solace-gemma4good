@@ -19,6 +19,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -352,7 +355,7 @@ private fun RoleplayGenerationStatsCard(stats: RoleplayGenerationStats) {
                 style = MaterialTheme.typography.bodySmall,
             )
             Text(
-                text = "Backend: ${stats.backend} | Threads: ${stats.threadCount} | Context: ${stats.contextSize}",
+                text = "Backend: ${stats.backend} | Threads: ${stats.threadCount} | GPU layers: ${stats.gpuLayers} | Context: ${stats.contextSize}",
                 style = MaterialTheme.typography.bodySmall,
             )
             Text(
@@ -368,7 +371,12 @@ private fun RoleplayGenerationStatsCard(stats: RoleplayGenerationStats) {
                 style = MaterialTheme.typography.bodySmall,
             )
             Text(
-                text = "Decode speed: ${"%.2f".format(stats.decodeTokensPerSecond)} tok/s | Native speed: ${"%.2f".format(stats.nativeTokensPerSecond)} tok/s",
+                text = "Prompt speed: ${"%.2f".format(stats.promptTokensPerSecond)} tok/s | Native prompt: ${"%.2f".format(stats.nativePromptTokensPerSecond)} tok/s",
+                style = MaterialTheme.typography.bodySmall,
+                fontWeight = FontWeight.Medium,
+            )
+            Text(
+                text = "Decode speed: ${"%.2f".format(stats.decodeTokensPerSecond)} tok/s | Native decode: ${"%.2f".format(stats.nativeTokensPerSecond)} tok/s",
                 style = MaterialTheme.typography.bodySmall,
                 fontWeight = FontWeight.Medium,
             )
@@ -379,6 +387,7 @@ private fun RoleplayGenerationStatsCard(stats: RoleplayGenerationStats) {
 @Composable
 private fun RoleplayBubble(message: Message, aiName: String) {
     val isUser = message.role == MessageRole.USER
+    val clipboard = LocalClipboardManager.current
 
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -431,11 +440,24 @@ private fun RoleplayBubble(message: Message, aiName: String) {
                 else
                     MaterialTheme.colorScheme.surfaceVariant,
             ) {
-                Text(
-                    text = message.content,
-                    style = MaterialTheme.typography.bodyMedium,
-                    modifier = Modifier.padding(12.dp),
-                )
+                if (!isUser && !message.isStreaming && message.content.isNotBlank()) {
+                    MarkdownMessageText(
+                        markdown = message.content,
+                        textColor = MaterialTheme.colorScheme.onSurfaceVariant.toArgb(),
+                        modifier = Modifier
+                            .padding(12.dp)
+                            .fillMaxWidth(),
+                        onLongClick = {
+                            clipboard.setText(AnnotatedString(message.content))
+                        },
+                    )
+                } else {
+                    Text(
+                        text = message.content,
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.padding(12.dp),
+                    )
+                }
             }
         }
     }

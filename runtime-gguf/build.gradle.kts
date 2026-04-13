@@ -20,6 +20,16 @@ android {
         externalNativeBuild {
             cmake {
                 cppFlags += listOf("-std=c++20")
+                arguments += listOf(
+                    "-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON",
+                    "-DCMAKE_BUILD_TYPE=Release",
+                    "-DCMAKE_MESSAGE_LOG_LEVEL=DEBUG",
+                    "-DCMAKE_VERBOSE_MAKEFILE=ON",
+                    "-DBUILD_SHARED_LIBS=ON",
+                    "-DLLAMA_BUILD_COMMON=ON",
+                    "-DLLAMA_CURL=OFF",
+                    "-DGGML_LLAMAFILE=OFF",
+                )
             }
         }
     }

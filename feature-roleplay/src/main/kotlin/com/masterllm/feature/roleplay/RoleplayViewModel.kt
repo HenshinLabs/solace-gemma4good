@@ -11,6 +11,7 @@ import com.masterllm.core.domain.model.Message
 import com.masterllm.core.domain.model.MessageRole
 import com.masterllm.core.domain.model.ModelFormat
 import com.masterllm.core.domain.model.RoleplaySession
+import com.masterllm.core.domain.model.TextRuntimeModelResolver
 import com.masterllm.core.domain.model.VisualStyle
 import com.masterllm.core.domain.repository.ConversationRepository
 import com.masterllm.core.domain.repository.ModelRepository
@@ -44,9 +45,12 @@ data class RoleplayGenerationStats(
     val generatedChars: Int,
     val firstTokenLatencyMs: Long,
     val durationMs: Long,
+    val promptTokensPerSecond: Double,
+    val nativePromptTokensPerSecond: Float,
     val decodeTokensPerSecond: Double,
     val nativeTokensPerSecond: Float,
     val threadCount: Int,
+    val gpuLayers: Int,
     val contextSize: Int,
     val generatedAtEpochMs: Long = System.currentTimeMillis(),
 )
@@ -128,6 +132,7 @@ class RoleplayViewModel @Inject constructor(
     private var messagesJob: Job? = null
     private var generationJob: Job? = null
     private var loadedModelId: String? = null
+    private var gpuAccelerationEnabled: Boolean = false
     private val engineMutex = Mutex()
 
     init {
@@ -162,7 +167,8 @@ class RoleplayViewModel @Inject constructor(
                 settingsRepository.getDefaultThreadCount(),
                 settingsRepository.getGpuAccelerationEnabled(),
             ) { threadCount, gpuEnabled -> threadCount to gpuEnabled }
-                .collect { (threadCount, _) ->
+                .collect { (threadCount, gpuEnabled) ->
+                    gpuAccelerationEnabled = gpuEnabled
                     _uiState.update { state ->
                         state.copy(
                             inferenceParams = state.inferenceParams.copy(
@@ -404,11 +410,20 @@ class RoleplayViewModel @Inject constructor(
                     ?.let { ((completedAtNs - it) / 1_000_000L).coerceAtLeast(1L) }
                     ?: totalElapsedMs
                 val generatedTokens = (ggufEngine.getContextLengthUsed() - promptTokens).coerceAtLeast(0)
+                val promptTokensPerSecond = if (firstTokenLatencyMs > 0) {
+                    promptTokens.toDouble() / (firstTokenLatencyMs / 1000.0)
+                } else {
+                    0.0
+                }
                 val decodeTokensPerSecond = if (decodeElapsedMs > 0) {
                     generatedTokens.toDouble() / (decodeElapsedMs / 1000.0)
                 } else {
                     0.0
                 }
+                val nativePromptSpeed = ggufEngine.getPromptProcessingSpeed()
+                val nativeDecodeSpeed = ggufEngine.getResponseGenerationSpeed()
+                val activeThreads = ggufEngine.getConfiguredThreadCount().coerceAtLeast(1)
+                val activeGpuLayers = ggufEngine.getConfiguredGpuLayers().coerceAtLeast(0)
 
                 _uiState.update { state ->
                     state.copy(
@@ -422,9 +437,12 @@ class RoleplayViewModel @Inject constructor(
                             generatedChars = finalText.length,
                             firstTokenLatencyMs = firstTokenLatencyMs,
                             durationMs = totalElapsedMs,
+                            promptTokensPerSecond = promptTokensPerSecond,
+                            nativePromptTokensPerSecond = nativePromptSpeed,
                             decodeTokensPerSecond = decodeTokensPerSecond,
-                            nativeTokensPerSecond = ggufEngine.getResponseGenerationSpeed(),
-                            threadCount = state.inferenceParams.numThreads,
+                            nativeTokensPerSecond = nativeDecodeSpeed,
+                            threadCount = activeThreads,
+                            gpuLayers = activeGpuLayers,
                             contextSize = state.inferenceParams.contextSize ?: 2048,
                         ),
                     )
@@ -473,31 +491,12 @@ class RoleplayViewModel @Inject constructor(
             ?: _uiState.value.availableModels.firstOrNull { it.id == modelId }
             ?: return null
 
-        val textRuntimeModel = when (model.format) {
-            ModelFormat.GGUF -> model
-            ModelFormat.SAFETENSORS -> {
-                val fallback = _uiState.value.availableModels.firstOrNull {
-                    it.downloadState == DownloadState.DOWNLOADED &&
-                        it.format == ModelFormat.GGUF &&
-                        it.repoId == model.repoId
-                }
-                if (fallback != null) {
-                    fallback
-                } else {
-                    val safePath = model.localPath ?: "/data/models/${model.fileName}"
-                    safetensorsEngine.loadModel(safePath).getOrElse { throw it }
-                    throw IllegalStateException(
-                        "SafeTensors weights were validated, but roleplay text inference requires GGUF. " +
-                            "Download or convert a GGUF variant for this model offline.",
-                    )
-                }
-            }
-            ModelFormat.DIFFUSERS -> {
-                throw IllegalStateException(
-                    "Selected model is DIFFUSERS. Roleplay text inference requires GGUF.",
-                )
-            }
-        }
+        val resolution = TextRuntimeModelResolver.resolveForTextGeneration(
+            selectedModel = model,
+            availableModels = _uiState.value.availableModels,
+            contextLabel = "roleplay text inference",
+        )
+        val textRuntimeModel = resolution.runtimeModel
 
         if (conversation != null && conversation.modelId != textRuntimeModel.id) {
             conversationRepository.updateConversation(
@@ -515,7 +514,12 @@ class RoleplayViewModel @Inject constructor(
             val path = textRuntimeModel.localPath ?: "/data/models/${textRuntimeModel.fileName}"
 
             val loadStartedAtNs = System.nanoTime()
-            ggufEngine.load(modelPath = path, params = _uiState.value.inferenceParams)
+            ggufEngine.load(
+                modelPath = path,
+                params = _uiState.value.inferenceParams,
+                gpuAccelerationEnabled = gpuAccelerationEnabled,
+                gpuOffloadLayers = resolveDesiredGpuLayers(),
+            )
             loadDurationMs = ((System.nanoTime() - loadStartedAtNs) / 1_000_000L).coerceAtLeast(0L)
 
             replayedMessages = replayConversationContext(
@@ -576,6 +580,8 @@ class RoleplayViewModel @Inject constructor(
             "Not loaded"
         }
     }
+
+    private fun resolveDesiredGpuLayers(): Int = if (gpuAccelerationEnabled) 99 else 0
 
     private fun buildSystemPrompt(session: RoleplaySession): String {
         return buildString {

@@ -123,10 +123,22 @@ class GgufEngine @Inject constructor(
      */
     suspend fun load(
         modelPath: String, 
-        params: com.masterllm.core.domain.model.InferenceParams = com.masterllm.core.domain.model.InferenceParams()
+        params: com.masterllm.core.domain.model.InferenceParams = com.masterllm.core.domain.model.InferenceParams(),
+        gpuAccelerationEnabled: Boolean = false,
+        gpuOffloadLayers: Int? = null,
     ) = withContext(Dispatchers.IO) {
-        val actualContextSize = params.contextSize?.toLong()?.coerceAtLeast(512L) ?: DEFAULT_CONTEXT_SIZE
-        val actualChatTemplate = params.chatTemplate?.takeIf { it.isNotBlank() } ?: DEFAULT_CHAT_TEMPLATE
+        val ggufReader = GGUFReader()
+        ggufReader.load(modelPath)
+
+        val modelContextSize = ggufReader.getContextSize() ?: DEFAULT_CONTEXT_SIZE
+        val modelChatTemplate = ggufReader.getChatTemplate() ?: DEFAULT_CHAT_TEMPLATE
+        val actualContextSize = params.contextSize?.toLong()?.coerceAtLeast(512L) ?: modelContextSize
+        val actualChatTemplate = params.chatTemplate?.takeIf { it.isNotBlank() } ?: modelChatTemplate
+        val resolvedGpuLayers = if (gpuAccelerationEnabled) {
+            (gpuOffloadLayers ?: 99).coerceAtLeast(0)
+        } else {
+            0
+        }
         
         nativePtr = loadModel(
             modelPath,
@@ -136,6 +148,7 @@ class GgufEngine @Inject constructor(
             actualContextSize,
             actualChatTemplate,
             params.numThreads.coerceAtLeast(1),
+            resolvedGpuLayers,
             params.useMmap,
             params.useMlock,
         )
@@ -179,6 +192,30 @@ class GgufEngine @Inject constructor(
     fun getResponseGenerationSpeed(): Float {
         verifyHandle()
         return getResponseGenerationSpeed(nativePtr)
+    }
+
+    /**
+     * Returns the prompt processing speed in tokens per second.
+     */
+    fun getPromptProcessingSpeed(): Float {
+        verifyHandle()
+        return getPromptProcessingSpeed(nativePtr)
+    }
+
+    /**
+     * Returns the native thread count configured in llama.cpp.
+     */
+    fun getConfiguredThreadCount(): Int {
+        verifyHandle()
+        return getConfiguredThreadCount(nativePtr)
+    }
+
+    /**
+     * Returns the GPU layers configured for offload in llama.cpp.
+     */
+    fun getConfiguredGpuLayers(): Int {
+        verifyHandle()
+        return getConfiguredGpuLayers(nativePtr)
     }
     
     /**
@@ -284,6 +321,7 @@ class GgufEngine @Inject constructor(
         contextSize: Long,
         chatTemplate: String,
         nThreads: Int,
+        nGpuLayers: Int,
         useMmap: Boolean,
         useMlock: Boolean,
     ): Long
@@ -295,6 +333,9 @@ class GgufEngine @Inject constructor(
     )
     
     private external fun getResponseGenerationSpeed(modelPtr: Long): Float
+    private external fun getPromptProcessingSpeed(modelPtr: Long): Float
+    private external fun getConfiguredThreadCount(modelPtr: Long): Int
+    private external fun getConfiguredGpuLayers(modelPtr: Long): Int
     private external fun getContextSizeUsed(modelPtr: Long): Int
     private external fun close(modelPtr: Long)
     private external fun startCompletion(modelPtr: Long, prompt: String)

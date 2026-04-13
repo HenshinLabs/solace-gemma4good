@@ -28,6 +28,7 @@ void LLMInference::loadModel(
     long contextSize,
     const char *chatTemplate,
     int nThreads,
+    int nGpuLayers,
     bool useMmap,
     bool useMlock
 ) {
@@ -40,6 +41,7 @@ void LLMInference::loadModel(
     llama_model_params model_params = llama_model_default_params();
     model_params.use_mmap = useMmap;
     model_params.use_mlock = useMlock;
+    model_params.n_gpu_layers = nGpuLayers;
     
     _model = llama_model_load_from_file(model_path, model_params);
     if (!_model) {
@@ -52,6 +54,7 @@ void LLMInference::loadModel(
     ctx_params.n_ctx = contextSize;
     ctx_params.n_batch = contextSize;
     ctx_params.n_threads = nThreads;
+    ctx_params.n_threads_batch = nThreads;
     ctx_params.no_perf = true;
     
     _ctx = llama_init_from_model(_model, ctx_params);
@@ -80,6 +83,8 @@ void LLMInference::loadModel(
     }
     
     _storeChats = storeChats;
+    _configuredThreads = nThreads;
+    _configuredGpuLayers = nGpuLayers;
     
     LOGi("Model loaded successfully");
 }
@@ -92,7 +97,17 @@ void LLMInference::addChatMessage(const char *message, const char *role) {
 }
 
 float LLMInference::getResponseGenerationTime() const {
-    return (float)_responseNumTokens / (_responseGenerationTime / 1e6);
+    if (_responseGenerationTimeUs <= 0 || _responseNumTokens <= 0) {
+        return 0.0f;
+    }
+    return (float)_responseNumTokens / (_responseGenerationTimeUs / 1e6f);
+}
+
+float LLMInference::getPromptProcessingSpeed() const {
+    if (_promptProcessingTimeUs <= 0 || _promptProcessingTokens <= 0) {
+        return 0.0f;
+    }
+    return (float)_promptProcessingTokens / (_promptProcessingTimeUs / 1e6f);
 }
 
 void LLMInference::startCompletion(const char *query) {
@@ -102,7 +117,9 @@ void LLMInference::startCompletion(const char *query) {
     }
     
     _generationReachedEog = false;
-    _responseGenerationTime = 0;
+    _promptProcessingTimeUs = 0;
+    _promptProcessingTokens = 0;
+    _responseGenerationTimeUs = 0;
     _responseNumTokens = 0;
     _response.clear();
     _cacheResponseTokens.clear();
@@ -174,6 +191,7 @@ std::string LLMInference::completionLoop() {
         throw std::runtime_error("Context size reached");
     }
     
+    const bool isPromptPass = _batch->n_tokens > 1;
     auto start = ggml_time_us();
     
     // Run model
@@ -194,8 +212,13 @@ std::string LLMInference::completionLoop() {
     std::string piece = common_token_to_piece(_ctx, _currToken, true);
     
     auto end = ggml_time_us();
-    _responseGenerationTime += (end - start);
-    _responseNumTokens += 1;
+    if (isPromptPass) {
+        _promptProcessingTimeUs += (end - start);
+        _promptProcessingTokens += _batch->n_tokens;
+    } else {
+        _responseGenerationTimeUs += (end - start);
+        _responseNumTokens += 1;
+    }
     _cacheResponseTokens += piece;
     
     // Update batch with new token
