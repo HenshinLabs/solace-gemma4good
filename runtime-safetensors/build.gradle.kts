@@ -26,6 +26,9 @@ android {
 dependencies {
     implementation(project(":core-domain"))
 
+    // JSON parsing
+    implementation(libs.gson)
+
     // Hilt
     implementation(libs.hilt.android)
     ksp(libs.hilt.compiler)

@@ -165,6 +165,10 @@ private fun RoleplayChatPane(
 ) {
     val listState = rememberLazyListState()
     val session = state.currentSession
+    var modelMenuExpanded by remember { mutableStateOf(false) }
+    val selectedModel = remember(state.selectedModelId, state.availableModels) {
+        state.availableModels.firstOrNull { it.id == state.selectedModelId }
+    }
 
     LaunchedEffect(state.messages.size, state.streamingText) {
         val count = state.messages.size + (if (state.streamingText.isNotEmpty()) 1 else 0)
@@ -192,6 +196,52 @@ private fun RoleplayChatPane(
                                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
                             )
                         }
+                        selectedModel?.let { model ->
+                            Text(
+                                text = "Model: ${model.displayName.ifBlank { model.repoId }}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.65f),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                    }
+                },
+                actions = {
+                    if (state.availableModels.isNotEmpty()) {
+                        IconButton(onClick = { modelMenuExpanded = true }) {
+                            Icon(Icons.Default.ModelTraining, contentDescription = "Select model")
+                        }
+                        DropdownMenu(
+                            expanded = modelMenuExpanded,
+                            onDismissRequest = { modelMenuExpanded = false },
+                        ) {
+                            state.availableModels.forEach { model ->
+                                DropdownMenuItem(
+                                    text = {
+                                        Column {
+                                            Text(model.displayName.ifBlank { model.repoId })
+                                            if (model.quantization.isNotBlank()) {
+                                                Text(
+                                                    text = model.quantization,
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                                                )
+                                            }
+                                        }
+                                    },
+                                    onClick = {
+                                        onAction(RoleplayAction.SelectModel(model.id))
+                                        modelMenuExpanded = false
+                                    },
+                                    trailingIcon = {
+                                        if (state.selectedModelId == model.id) {
+                                            Icon(Icons.Default.Check, contentDescription = null)
+                                        }
+                                    },
+                                )
+                            }
+                        }
                     }
                 },
             )
@@ -215,6 +265,12 @@ private fun RoleplayChatPane(
             contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
+            state.generationStatus?.let { status ->
+                item(key = "generation_status") {
+                    RoleplayGenerationStatusCard(status)
+                }
+            }
+
             items(
                 state.messages.filter { it.role != MessageRole.SYSTEM },
                 key = { it.id }
@@ -241,6 +297,81 @@ private fun RoleplayChatPane(
                     TypingIndicator(modifier = Modifier.padding(start = 40.dp))
                 }
             }
+
+            state.lastGenerationStats?.let { stats ->
+                item(key = "roleplay_generation_stats_${stats.generatedAtEpochMs}") {
+                    RoleplayGenerationStatsCard(stats)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun RoleplayGenerationStatusCard(status: String) {
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.secondaryContainer,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(16.dp),
+                strokeWidth = 2.dp,
+            )
+            Spacer(Modifier.width(10.dp))
+            Text(
+                text = status,
+                style = MaterialTheme.typography.bodySmall,
+                fontWeight = FontWeight.Medium,
+            )
+        }
+    }
+}
+
+@Composable
+private fun RoleplayGenerationStatsCard(stats: RoleplayGenerationStats) {
+    ElevatedCard(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 4.dp, bottom = 2.dp),
+        shape = RoundedCornerShape(14.dp),
+    ) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Text(
+                text = "Runtime stats",
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                text = "Model: ${stats.modelDisplayName}",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Text(
+                text = "Backend: ${stats.backend} | Threads: ${stats.threadCount} | Context: ${stats.contextSize}",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Text(
+                text = "Model load: ${stats.modelLoadDurationMs} ms | Replayed context messages: ${stats.replayedMessages}",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Text(
+                text = "Prompt tokens: ${stats.promptTokens} | Output tokens: ${stats.generatedTokens} (${stats.generatedChars} chars)",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Text(
+                text = "First token: ${stats.firstTokenLatencyMs} ms | Total: ${stats.durationMs} ms",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Text(
+                text = "Decode speed: ${"%.2f".format(stats.decodeTokensPerSecond)} tok/s | Native speed: ${"%.2f".format(stats.nativeTokensPerSecond)} tok/s",
+                style = MaterialTheme.typography.bodySmall,
+                fontWeight = FontWeight.Medium,
+            )
         }
     }
 }

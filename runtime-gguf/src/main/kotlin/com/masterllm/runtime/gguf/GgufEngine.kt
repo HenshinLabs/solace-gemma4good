@@ -18,71 +18,75 @@ class GgufEngine @Inject constructor(
     @ApplicationContext private val appContext: Context,
 ) {
     companion object {
+        @Volatile
+        private var loadedNativeLibrary: String = "unloaded"
+
         init {
             val logTag = GgufEngine::class.java.simpleName
-            
+
             // Check CPU features and load appropriate library
             val cpuFeatures = getCPUFeatures()
             val hasFp16 = cpuFeatures.contains("fp16") || cpuFeatures.contains("fphp")
             val hasDotProd = cpuFeatures.contains("dotprod") || cpuFeatures.contains("asimddp")
             val hasSve = cpuFeatures.contains("sve")
             val hasI8mm = cpuFeatures.contains("i8mm")
-            val isAtLeastArmV82 = cpuFeatures.contains("asimd") && 
-                                 cpuFeatures.contains("crc32") && 
-                                 cpuFeatures.contains("aes")
-            val isAtLeastArmV84 = cpuFeatures.contains("dcpop") && 
-                                 cpuFeatures.contains("uscat")
-            
+            val isAtLeastArmV82 = cpuFeatures.contains("asimd") &&
+                cpuFeatures.contains("crc32") &&
+                cpuFeatures.contains("aes")
+            val isAtLeastArmV84 = cpuFeatures.contains("dcpop") &&
+                cpuFeatures.contains("uscat")
+
             Log.d(logTag, "CPU features: $cpuFeatures")
-            
+
             // Check if running on emulator
-            val isEmulated = (Build.HARDWARE.contains("goldfish") || 
-                           Build.HARDWARE.contains("ranchu"))
-            
+            val isEmulated = Build.HARDWARE.contains("goldfish") ||
+                Build.HARDWARE.contains("ranchu")
+
             Log.d(logTag, "isEmulated: $isEmulated")
-            
+
+            val candidateLibraries = mutableListOf<String>()
             if (!isEmulated) {
                 if (supportsArm64V8a()) {
                     when {
-                        isAtLeastArmV84 && hasSve && hasI8mm && hasFp16 && hasDotProd -> {
-                            Log.d(logTag, "Loading libllama_android_v8_4_fp16_dotprod_i8mm_sve.so")
-                            System.loadLibrary("llama_android_v8_4_fp16_dotprod_i8mm_sve")
-                        }
-                        isAtLeastArmV84 && hasSve && hasFp16 && hasDotProd -> {
-                            Log.d(logTag, "Loading libllama_android_v8_4_fp16_dotprod_sve.so")
-                            System.loadLibrary("llama_android_v8_4_fp16_dotprod_sve")
-                        }
-                        isAtLeastArmV84 && hasI8mm && hasFp16 && hasDotProd -> {
-                            Log.d(logTag, "Loading libllama_android_v8_4_fp16_dotprod_i8mm.so")
-                            System.loadLibrary("llama_android_v8_4_fp16_dotprod_i8mm")
-                        }
-                        isAtLeastArmV84 && hasFp16 && hasDotProd -> {
-                            Log.d(logTag, "Loading libllama_android_v8_4_fp16_dotprod.so")
-                            System.loadLibrary("llama_android_v8_4_fp16_dotprod")
-                        }
-                        isAtLeastArmV82 && hasFp16 && hasDotProd -> {
-                            Log.d(logTag, "Loading libllama_android_v8_2_fp16_dotprod.so")
-                            System.loadLibrary("llama_android_v8_2_fp16_dotprod")
-                        }
-                        isAtLeastArmV82 && hasFp16 -> {
-                            Log.d(logTag, "Loading libllama_android_v8_2_fp16.so")
-                            System.loadLibrary("llama_android_v8_2_fp16")
-                        }
-                        else -> {
-                            Log.d(logTag, "Loading libllama_android.so")
-                            System.loadLibrary("llama_android")
-                        }
+                        isAtLeastArmV84 && hasSve && hasI8mm && hasFp16 && hasDotProd ->
+                            candidateLibraries += "llama_android_v8_4_fp16_dotprod_i8mm_sve"
+                        isAtLeastArmV84 && hasSve && hasFp16 && hasDotProd ->
+                            candidateLibraries += "llama_android_v8_4_fp16_dotprod_sve"
+                        isAtLeastArmV84 && hasI8mm && hasFp16 && hasDotProd ->
+                            candidateLibraries += "llama_android_v8_4_fp16_dotprod_i8mm"
+                        isAtLeastArmV84 && hasFp16 && hasDotProd ->
+                            candidateLibraries += "llama_android_v8_4_fp16_dotprod"
+                        isAtLeastArmV82 && hasFp16 && hasDotProd ->
+                            candidateLibraries += "llama_android_v8_2_fp16_dotprod"
+                        isAtLeastArmV82 && hasFp16 ->
+                            candidateLibraries += "llama_android_v8_2_fp16"
                     }
-                } else {
-                    Log.d(logTag, "Loading default libllama_android.so")
-                    System.loadLibrary("llama_android")
                 }
-            } else {
-                Log.d(logTag, "Loading default libllama_android.so (emulator)")
-                System.loadLibrary("llama_android")
+            }
+            candidateLibraries += "llama_android"
+
+            var lastError: Throwable? = null
+            for (library in candidateLibraries.distinct()) {
+                try {
+                    Log.d(logTag, "Trying to load lib$library.so")
+                    System.loadLibrary(library)
+                    loadedNativeLibrary = library
+                    Log.i(logTag, "Loaded native library: $library")
+                    lastError = null
+                    break
+                } catch (error: UnsatisfiedLinkError) {
+                    lastError = error
+                    Log.w(logTag, "Native library unavailable: $library")
+                }
+            }
+
+            if (lastError != null) {
+                throw UnsatisfiedLinkError(
+                    "Unable to load GGUF native runtime. Tried: ${candidateLibraries.distinct().joinToString()}"
+                )
             }
         }
-        
+
         private fun getCPUFeatures(): String {
             return try {
                 File("/proc/cpuinfo").readText()
@@ -97,9 +101,11 @@ class GgufEngine @Inject constructor(
         
         private fun supportsArm64V8a(): Boolean = 
             Build.SUPPORTED_ABIS[0]?.equals("arm64-v8a") == true
-            
+
         const val DEFAULT_CONTEXT_SIZE: Long = 2048L
         const val DEFAULT_CHAT_TEMPLATE = "{% for message in messages %}{% if loop.first and messages[0]['role'] != 'system' %}{{ '<|im_start|>system\\nYou are a helpful AI assistant.\\n<|im_end|>\\n' }}{% endif %}{{'<|im_start|>' + message['role'] + '\\n' + message['content'] + '<|im_end|>\\n'}}{% endfor %}{% if add_generation_prompt %}{{ '<|im_start|>assistant\\n' }}{% endif %}"
+
+        fun getLoadedNativeLibraryName(): String = loadedNativeLibrary
     }
     
     private var nativePtr = 0L
@@ -116,19 +122,19 @@ class GgufEngine @Inject constructor(
         modelPath: String, 
         params: com.masterllm.core.domain.model.InferenceParams = com.masterllm.core.domain.model.InferenceParams()
     ) = withContext(Dispatchers.IO) {
-        val actualContextSize = params.maxTokens.coerceAtMost(4096).toLong()
-        val actualChatTemplate = params.systemPrompt.takeIf { it.isNotBlank() } ?: DEFAULT_CHAT_TEMPLATE
+        val actualContextSize = params.contextSize?.toLong()?.coerceAtLeast(512L) ?: DEFAULT_CONTEXT_SIZE
+        val actualChatTemplate = params.chatTemplate?.takeIf { it.isNotBlank() } ?: DEFAULT_CHAT_TEMPLATE
         
         nativePtr = loadModel(
             modelPath,
-            0.1f,  // minP
+            params.minP,
             params.temperature,
-            true,  // storeChats
+            params.storeChats,
             actualContextSize,
             actualChatTemplate,
-            4,     // nThreads
-            true,  // useMmap
-            false, // useMlock
+            params.numThreads.coerceAtLeast(1),
+            params.useMmap,
+            params.useMlock,
         )
         
         isLoaded = nativePtr != 0L

@@ -164,12 +164,19 @@ data class ImagePromptResult(
  * Inference parameters for LLM text generation.
  */
 data class InferenceParams(
+    val minP: Float = 0.1f,
     val temperature: Float = 0.7f,
     val topP: Float = 0.9f,
     val topK: Int = 40,
     val repeatPenalty: Float = 1.1f,
     val maxTokens: Int = 2048,
     val systemPrompt: String = "",
+    val storeChats: Boolean = true,
+    val contextSize: Int? = null,
+    val chatTemplate: String? = null,
+    val numThreads: Int = 4,
+    val useMmap: Boolean = true,
+    val useMlock: Boolean = false,
 )
 
 /**

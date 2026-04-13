@@ -3,6 +3,7 @@ package com.masterllm.feature.settings
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import android.content.Context
+import android.os.Build
 import android.os.Environment
 import com.masterllm.core.domain.model.ImageFrequency
 import com.masterllm.core.domain.repository.SettingsRepository
@@ -198,7 +199,7 @@ class SettingsViewModel @Inject constructor(
 		}
 	}
 
-private fun refreshGpuDriverStatus() {
+	private fun refreshGpuDriverStatus() {
         val isModelLoaded = ggufEngine.isModelLoaded()
 
         val backendLabel = when {
@@ -214,24 +215,25 @@ private fun refreshGpuDriverStatus() {
         val checks = listOf(
             "Native backend: ${if (isModelLoaded) "loaded" else "not loaded"}",
             "Model status: ${if (isModelLoaded) "active" else "idle"}",
-            "Thread count: ${_uiState.value.threadCount}",
+			"Thread count: ${_uiState.value.defaultThreadCount}",
+			"GPU toggle: ${if (_uiState.value.gpuAccelerationEnabled) "enabled" else "disabled"}",
 		)
 
 		val details = buildString {
-			append("Native backend: ")
-			append(if (driverReport.nativeBackendAvailable) "available" else "missing")
-			append(" | Active mode: ")
+			append("Backend: ")
 			append(backendLabel)
-			append("\nSoC: ")
-			append(driverReport.socManufacturer ?: "unknown")
+			append(" | ABI: ")
+			append(Build.SUPPORTED_ABIS.firstOrNull() ?: "unknown")
+			append("\nDevice: ")
+			append(Build.MANUFACTURER)
 			append(' ')
-			append(driverReport.socModel ?: "")
+			append(Build.MODEL)
 			append(" | Hardware: ")
-			append(driverReport.deviceHardware)
+			append(Build.HARDWARE)
 			append("\nBuild: ")
-			append(driverReport.buildDisplay)
+			append(Build.DISPLAY)
 			append(" | Android: ")
-			append(driverReport.androidRelease)
+			append(Build.VERSION.RELEASE)
 		}
 
 		_uiState.update {

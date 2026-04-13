@@ -2,33 +2,67 @@ package com.masterllm.feature.roleplay
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.masterllm.core.domain.model.*
+import com.masterllm.core.domain.model.Conversation
+import com.masterllm.core.domain.model.ConversationMode
+import com.masterllm.core.domain.model.DownloadState
+import com.masterllm.core.domain.model.InferenceParams
+import com.masterllm.core.domain.model.LlmModel
+import com.masterllm.core.domain.model.Message
+import com.masterllm.core.domain.model.MessageRole
+import com.masterllm.core.domain.model.ModelFormat
+import com.masterllm.core.domain.model.RoleplaySession
+import com.masterllm.core.domain.model.VisualStyle
 import com.masterllm.core.domain.repository.ConversationRepository
 import com.masterllm.core.domain.repository.ModelRepository
 import com.masterllm.core.domain.repository.RoleplayRepository
 import com.masterllm.core.domain.repository.SettingsRepository
 import com.masterllm.runtime.gguf.GgufEngine
+import com.masterllm.runtime.safetensors.SafetensorsEngine
 import dagger.hilt.android.lifecycle.HiltViewModel
+import java.util.UUID
+import javax.inject.Inject
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import java.util.UUID
-import javax.inject.Inject
+
+data class RoleplayGenerationStats(
+    val modelDisplayName: String,
+    val backend: String,
+    val modelLoadDurationMs: Long,
+    val replayedMessages: Int,
+    val promptTokens: Int,
+    val generatedTokens: Int,
+    val generatedChars: Int,
+    val firstTokenLatencyMs: Long,
+    val durationMs: Long,
+    val decodeTokensPerSecond: Double,
+    val nativeTokensPerSecond: Float,
+    val threadCount: Int,
+    val contextSize: Int,
+    val generatedAtEpochMs: Long = System.currentTimeMillis(),
+)
 
 data class RoleplayUiState(
     val sessions: List<RoleplaySession> = emptyList(),
     val currentSession: RoleplaySession? = null,
     val messages: List<Message> = emptyList(),
     val availableModels: List<LlmModel> = emptyList(),
+    val selectedModelId: String? = null,
     val inputText: String = "",
     val isGenerating: Boolean = false,
     val streamingText: String = "",
+    val generationStatus: String? = null,
     val showSessionList: Boolean = true,
     val showSetupDialog: Boolean = false,
-    // Setup form
     val setupTitle: String = "",
     val setupGenre: String = "Fantasy",
     val setupPremise: String = "",
@@ -38,8 +72,8 @@ data class RoleplayUiState(
     val setupUserDescription: String = "",
     val setupVisualStyle: VisualStyle = VisualStyle.FANTASY_ART,
     val error: String? = null,
-    // Inference parameters
     val inferenceParams: InferenceParams = InferenceParams(),
+    val lastGenerationStats: RoleplayGenerationStats? = null,
 )
 
 sealed interface RoleplayAction {
@@ -49,8 +83,8 @@ sealed interface RoleplayAction {
     data class SelectSession(val id: String) : RoleplayAction
     data object NewSession : RoleplayAction
     data class DeleteSession(val id: String) : RoleplayAction
+    data class SelectModel(val modelId: String) : RoleplayAction
     data object BackToList : RoleplayAction
-    // Setup
     data object ShowSetup : RoleplayAction
     data object DismissSetup : RoleplayAction
     data class SetupTitleChanged(val v: String) : RoleplayAction
@@ -63,7 +97,6 @@ sealed interface RoleplayAction {
     data class SetupStyleChanged(val v: VisualStyle) : RoleplayAction
     data object CreateSession : RoleplayAction
     data object DismissError : RoleplayAction
-    // Inference parameters
     data class UpdateTemperature(val value: Float) : RoleplayAction
     data class UpdateTopP(val value: Float) : RoleplayAction
     data class UpdateTopK(val value: Int) : RoleplayAction
@@ -80,7 +113,14 @@ class RoleplayViewModel @Inject constructor(
     private val modelRepository: ModelRepository,
     private val settingsRepository: SettingsRepository,
     private val ggufEngine: GgufEngine,
+    private val safetensorsEngine: SafetensorsEngine,
 ) : ViewModel() {
+
+    private data class EngineReadyResult(
+        val model: LlmModel,
+        val loadDurationMs: Long,
+        val replayedMessages: Int,
+    )
 
     private val _uiState = MutableStateFlow(RoleplayUiState())
     val uiState: StateFlow<RoleplayUiState> = _uiState.asStateFlow()
@@ -96,27 +136,38 @@ class RoleplayViewModel @Inject constructor(
                 _uiState.update { it.copy(sessions = sessions) }
             }
         }
+
         viewModelScope.launch {
             modelRepository.getDownloadedModels().collect { models ->
-                _uiState.update {
-                    it.copy(availableModels = models.filter { m ->
-                        m.downloadState == DownloadState.DOWNLOADED && m.format == ModelFormat.GGUF
-                    })
+                val filtered = models.filter { model ->
+                    model.downloadState == DownloadState.DOWNLOADED &&
+                        (model.format == ModelFormat.GGUF || model.format == ModelFormat.SAFETENSORS)
+                }
+
+                _uiState.update { state ->
+                    val selected = state.selectedModelId?.takeIf { selectedId ->
+                        filtered.any { it.id == selectedId }
+                    } ?: filtered.firstOrNull()?.id
+
+                    state.copy(
+                        availableModels = filtered,
+                        selectedModelId = selected,
+                    )
                 }
             }
         }
+
         viewModelScope.launch {
             combine(
                 settingsRepository.getDefaultThreadCount(),
                 settingsRepository.getGpuAccelerationEnabled(),
             ) { threadCount, gpuEnabled -> threadCount to gpuEnabled }
-                .collect { (threadCount, gpuEnabled) ->
-                    // Thread count is now passed directly to load()
+                .collect { (threadCount, _) ->
                     _uiState.update { state ->
                         state.copy(
                             inferenceParams = state.inferenceParams.copy(
-                                numThreads = threadCount.coerceAtLeast(1)
-                            )
+                                numThreads = threadCount.coerceAtLeast(1),
+                            ),
                         )
                     }
                 }
@@ -131,6 +182,7 @@ class RoleplayViewModel @Inject constructor(
             is RoleplayAction.SelectSession -> selectSession(action.id)
             RoleplayAction.NewSession -> _uiState.update { it.copy(showSetupDialog = true) }
             is RoleplayAction.DeleteSession -> deleteSession(action.id)
+            is RoleplayAction.SelectModel -> selectModel(action.modelId)
             RoleplayAction.BackToList -> _uiState.update {
                 it.copy(showSessionList = true, currentSession = null, messages = emptyList())
             }
@@ -141,63 +193,92 @@ class RoleplayViewModel @Inject constructor(
             is RoleplayAction.SetupPremiseChanged -> _uiState.update { it.copy(setupPremise = action.v) }
             is RoleplayAction.SetupAiNameChanged -> _uiState.update { it.copy(setupAiName = action.v) }
             is RoleplayAction.SetupAiDescChanged -> _uiState.update { it.copy(setupAiDescription = action.v) }
-is RoleplayAction.SetupUserNameChanged -> _uiState.update { it.copy(setupUserName = action.v) }
-        is RoleplayAction.SetupUserDescChanged -> _uiState.update { it.copy(setupUserDescription = action.v) }
-        is RoleplayAction.SetupStyleChanged -> _uiState.update { it.copy(setupVisualStyle = action.v) }
-        RoleplayAction.CreateSession -> createSession()
-        RoleplayAction.DismissError -> _uiState.update { it.copy(error = null) }
-        is RoleplayAction.UpdateTemperature -> updateInferenceParams { it.copy(temperature = action.value) }
-        is RoleplayAction.UpdateTopP -> updateInferenceParams { it.copy(topP = action.value) }
-        is RoleplayAction.UpdateTopK -> updateInferenceParams { it.copy(topK = action.value) }
-        is RoleplayAction.UpdateRepeatPenalty -> updateInferenceParams { it.copy(repeatPenalty = action.value) }
-        is RoleplayAction.UpdateMaxTokens -> updateInferenceParams { it.copy(maxTokens = action.value) }
-        is RoleplayAction.UpdateSystemPrompt -> updateInferenceParams { it.copy(systemPrompt = action.value) }
-        RoleplayAction.ResetInferenceParams -> _uiState.update { it.copy(inferenceParams = InferenceParams()) }
+            is RoleplayAction.SetupUserNameChanged -> _uiState.update { it.copy(setupUserName = action.v) }
+            is RoleplayAction.SetupUserDescChanged -> _uiState.update { it.copy(setupUserDescription = action.v) }
+            is RoleplayAction.SetupStyleChanged -> _uiState.update { it.copy(setupVisualStyle = action.v) }
+            RoleplayAction.CreateSession -> createSession()
+            RoleplayAction.DismissError -> _uiState.update { it.copy(error = null) }
+            is RoleplayAction.UpdateTemperature -> updateInferenceParams { it.copy(temperature = action.value) }
+            is RoleplayAction.UpdateTopP -> updateInferenceParams { it.copy(topP = action.value) }
+            is RoleplayAction.UpdateTopK -> updateInferenceParams { it.copy(topK = action.value) }
+            is RoleplayAction.UpdateRepeatPenalty -> updateInferenceParams { it.copy(repeatPenalty = action.value) }
+            is RoleplayAction.UpdateMaxTokens -> updateInferenceParams { it.copy(maxTokens = action.value) }
+            is RoleplayAction.UpdateSystemPrompt -> updateInferenceParams { it.copy(systemPrompt = action.value) }
+            RoleplayAction.ResetInferenceParams -> _uiState.update { it.copy(inferenceParams = InferenceParams()) }
+        }
     }
-}
 
-private fun updateInferenceParams(update: (InferenceParams) -> InferenceParams) {
-    _uiState.update { state ->
-        state.copy(inferenceParams = update(state.inferenceParams))
+    private fun updateInferenceParams(update: (InferenceParams) -> InferenceParams) {
+        _uiState.update { state ->
+            state.copy(inferenceParams = update(state.inferenceParams))
+        }
     }
-}
+
+    private fun selectModel(modelId: String) {
+        viewModelScope.launch {
+            if (_uiState.value.isGenerating) {
+                stopGeneration()
+            }
+
+            _uiState.update { it.copy(selectedModelId = modelId) }
+
+            _uiState.value.currentSession?.let { session ->
+                val conversation = conversationRepository.getConversationById(session.conversationId)
+                if (conversation != null && conversation.modelId != modelId) {
+                    conversationRepository.updateConversation(
+                        conversation.copy(
+                            modelId = modelId,
+                            updatedAt = System.currentTimeMillis(),
+                        ),
+                    )
+                }
+            }
+
+            if (loadedModelId != null && loadedModelId != modelId) {
+                ggufEngine.close()
+                loadedModelId = null
+            }
+        }
+    }
 
     private fun createSession() {
-        val s = _uiState.value
-        if (s.setupTitle.isBlank() || s.setupAiName.isBlank()) {
+        val state = _uiState.value
+        if (state.setupTitle.isBlank() || state.setupAiName.isBlank()) {
             _uiState.update { it.copy(error = "Title and AI character name required") }
             return
         }
 
         viewModelScope.launch {
-            val selectedModelId = _uiState.value.availableModels.firstOrNull()?.id.orEmpty()
-            val convoId = UUID.randomUUID().toString()
-            val convo = Conversation(
-                id = convoId,
-                title = s.setupTitle,
+            val selectedModelId = _uiState.value.selectedModelId
+                ?: _uiState.value.availableModels.firstOrNull()?.id
+                .orEmpty()
+            val conversationId = UUID.randomUUID().toString()
+
+            val conversation = Conversation(
+                id = conversationId,
+                title = state.setupTitle,
                 mode = ConversationMode.ROLEPLAY,
                 modelId = selectedModelId,
             )
-            conversationRepository.createConversation(convo)
+            conversationRepository.createConversation(conversation)
 
             val session = RoleplaySession(
                 id = UUID.randomUUID().toString(),
-                conversationId = convoId,
-                title = s.setupTitle,
-                genre = s.setupGenre,
-                premise = s.setupPremise,
-                aiCharacterName = s.setupAiName,
-                aiCharacterDescription = s.setupAiDescription,
-                userCharacterName = s.setupUserName,
-                userCharacterDescription = s.setupUserDescription,
-                visualStyle = s.setupVisualStyle,
+                conversationId = conversationId,
+                title = state.setupTitle,
+                genre = state.setupGenre,
+                premise = state.setupPremise,
+                aiCharacterName = state.setupAiName,
+                aiCharacterDescription = state.setupAiDescription,
+                userCharacterName = state.setupUserName,
+                userCharacterDescription = state.setupUserDescription,
+                visualStyle = state.setupVisualStyle,
             )
             roleplayRepository.createSession(session)
 
-            // Add system message with RP context
             val systemMsg = Message(
                 id = UUID.randomUUID().toString(),
-                conversationId = convoId,
+                conversationId = conversationId,
                 role = MessageRole.SYSTEM,
                 content = buildSystemPrompt(session),
             )
@@ -217,16 +298,21 @@ private fun updateInferenceParams(update: (InferenceParams) -> InferenceParams) 
                 )
             }
 
-            // Watch messages
-            observeMessages(convoId)
+            observeMessages(conversationId)
         }
     }
 
     private fun selectSession(id: String) {
         viewModelScope.launch {
             val session = roleplayRepository.getSessionById(id) ?: return@launch
+            val conversation = conversationRepository.getConversationById(session.conversationId)
             _uiState.update {
-                it.copy(currentSession = session, showSessionList = false)
+                it.copy(
+                    currentSession = session,
+                    showSessionList = false,
+                    selectedModelId = conversation?.modelId?.takeIf { modelId -> modelId.isNotBlank() }
+                        ?: it.selectedModelId,
+                )
             }
             observeMessages(session.conversationId)
         }
@@ -260,49 +346,52 @@ private fun updateInferenceParams(update: (InferenceParams) -> InferenceParams) 
         generationJob = viewModelScope.launch {
             _uiState.update { it.copy(inputText = "") }
 
-            val userMsg = Message(
-                id = UUID.randomUUID().toString(),
-                conversationId = session.conversationId,
-                role = MessageRole.USER,
-                content = text,
-            )
-            conversationRepository.addMessage(userMsg)
-
-            _uiState.update { it.copy(isGenerating = true, streamingText = "") }
-
-try {
-            ensureEngineReady(session)
-                ?: throw IllegalStateException("Download a GGUF model in Marketplace before roleplaying.")
-
-            // Add user message to engine
-            ggufEngine.addUserMessage(text)
-            
-            val builder = StringBuilder()
-
-            // Generate response using new API
-            ggufEngine.getResponseAsFlow(text).collect { piece ->
-                if (!_uiState.value.isGenerating) throw CancellationException("Generation stopped")
-                builder.append(piece)
-                _uiState.update { it.copy(streamingText = builder.toString()) }
+            _uiState.update {
+                it.copy(
+                    isGenerating = true,
+                    streamingText = "",
+                    generationStatus = "Loading model...",
+                )
             }
 
-            val finalText = builder.toString().trim()
-            if (finalText.isNotEmpty()) {
-                // Add assistant response to engine
-                ggufEngine.addAssistantMessage(finalText)
-                
-                val aiMsg = Message(
+            try {
+                val ready = ensureEngineReady(session)
+                    ?: throw IllegalStateException("Download a GGUF model in Marketplace before roleplaying.")
+
+                val activeModel = ready.model
+
+                val userMsg = Message(
                     id = UUID.randomUUID().toString(),
                     conversationId = session.conversationId,
-                    role = MessageRole.ASSISTANT,
-                    content = finalText,
+                    role = MessageRole.USER,
+                    content = text,
                 )
-                conversationRepository.addMessage(aiMsg)
-            }
-        }
+                conversationRepository.addMessage(userMsg)
+
+                _uiState.update { it.copy(generationStatus = "Processing prompt...") }
+
+                ggufEngine.addUserMessage(text)
+
+                val builder = StringBuilder()
+                val promptTokens = ggufEngine.getContextLengthUsed()
+                val startedAtNs = System.nanoTime()
+                var firstTokenAtNs: Long? = null
+
+                ggufEngine.getResponseAsFlow(text).collect { piece ->
+                    if (!_uiState.value.isGenerating) throw CancellationException("Generation stopped")
+                    if (firstTokenAtNs == null) {
+                        firstTokenAtNs = System.nanoTime()
+                        _uiState.update { state -> state.copy(generationStatus = "Generating response...") }
+                    }
+                    builder.append(piece)
+                    _uiState.update { it.copy(streamingText = builder.toString()) }
+                }
 
                 val finalText = builder.toString().trim()
+                val completedAtNs = System.nanoTime()
                 if (finalText.isNotEmpty()) {
+                    ggufEngine.addAssistantMessage(finalText)
+
                     val aiMsg = Message(
                         id = UUID.randomUUID().toString(),
                         conversationId = session.conversationId,
@@ -311,6 +400,39 @@ try {
                     )
                     conversationRepository.addMessage(aiMsg)
                 }
+
+                val totalElapsedMs = ((completedAtNs - startedAtNs) / 1_000_000L).coerceAtLeast(1L)
+                val firstTokenLatencyMs = (((firstTokenAtNs ?: completedAtNs) - startedAtNs) / 1_000_000L)
+                    .coerceAtLeast(0L)
+                val decodeElapsedMs = firstTokenAtNs
+                    ?.let { ((completedAtNs - it) / 1_000_000L).coerceAtLeast(1L) }
+                    ?: totalElapsedMs
+                val generatedTokens = (ggufEngine.getContextLengthUsed() - promptTokens).coerceAtLeast(0)
+                val decodeTokensPerSecond = if (decodeElapsedMs > 0) {
+                    generatedTokens.toDouble() / (decodeElapsedMs / 1000.0)
+                } else {
+                    0.0
+                }
+
+                _uiState.update { state ->
+                    state.copy(
+                        lastGenerationStats = RoleplayGenerationStats(
+                            modelDisplayName = activeModel.displayName.ifBlank { activeModel.repoId },
+                            backend = resolveBackendLabel(),
+                            modelLoadDurationMs = ready.loadDurationMs,
+                            replayedMessages = ready.replayedMessages,
+                            promptTokens = promptTokens,
+                            generatedTokens = generatedTokens,
+                            generatedChars = finalText.length,
+                            firstTokenLatencyMs = firstTokenLatencyMs,
+                            durationMs = totalElapsedMs,
+                            decodeTokensPerSecond = decodeTokensPerSecond,
+                            nativeTokensPerSecond = ggufEngine.getResponseGenerationSpeed(),
+                            threadCount = state.inferenceParams.numThreads,
+                            contextSize = state.inferenceParams.contextSize ?: 2048,
+                        ),
+                    )
+                }
             } catch (_: CancellationException) {
                 // Explicit stop from UI.
             } catch (e: Exception) {
@@ -318,13 +440,19 @@ try {
                     it.copy(error = "Roleplay generation failed: ${e.message ?: "unknown error"}")
                 }
             } finally {
-                _uiState.update { it.copy(isGenerating = false, streamingText = "") }
+                _uiState.update {
+                    it.copy(
+                        isGenerating = false,
+                        streamingText = "",
+                        generationStatus = null,
+                    )
+                }
             }
         }
     }
 
     private fun stopGeneration() {
-        _uiState.update { it.copy(isGenerating = false) }
+        _uiState.update { it.copy(isGenerating = false, generationStatus = null) }
         generationJob?.cancel()
         generationJob = null
     }
@@ -338,9 +466,10 @@ try {
         }
     }
 
-    private suspend fun ensureEngineReady(session: RoleplaySession): String? = engineMutex.withLock {
+    private suspend fun ensureEngineReady(session: RoleplaySession): EngineReadyResult? = engineMutex.withLock {
         val conversation = conversationRepository.getConversationById(session.conversationId)
-        val modelId = conversation?.modelId?.takeIf { it.isNotBlank() }
+        val modelId = _uiState.value.selectedModelId
+            ?: conversation?.modelId?.takeIf { it.isNotBlank() }
             ?: _uiState.value.availableModels.firstOrNull()?.id
             ?: return null
 
@@ -348,63 +477,128 @@ try {
             ?: _uiState.value.availableModels.firstOrNull { it.id == modelId }
             ?: return null
 
-        if (conversation != null && conversation.modelId != model.id) {
+        val textRuntimeModel = when (model.format) {
+            ModelFormat.GGUF -> model
+            ModelFormat.SAFETENSORS -> {
+                val fallback = _uiState.value.availableModels.firstOrNull {
+                    it.downloadState == DownloadState.DOWNLOADED &&
+                        it.format == ModelFormat.GGUF &&
+                        it.repoId == model.repoId
+                }
+                if (fallback != null) {
+                    fallback
+                } else {
+                    val safePath = model.localPath ?: "/data/models/${model.fileName}"
+                    safetensorsEngine.loadModel(safePath).getOrElse { throw it }
+                    throw IllegalStateException(
+                        "SafeTensors weights were validated, but roleplay text inference requires GGUF. " +
+                            "Download or convert a GGUF variant for this model.",
+                    )
+                }
+            }
+            ModelFormat.DIFFUSERS -> {
+                throw IllegalStateException(
+                    "Selected model is DIFFUSERS. Roleplay text inference requires GGUF.",
+                )
+            }
+        }
+
+        if (conversation != null && conversation.modelId != textRuntimeModel.id) {
             conversationRepository.updateConversation(
-                conversation.copy(modelId = model.id, updatedAt = System.currentTimeMillis())
+                conversation.copy(modelId = textRuntimeModel.id, updatedAt = System.currentTimeMillis()),
             )
         }
 
-if (loadedModelId != model.id || !ggufEngine.isModelLoaded()) {
-        val path = model.localPath ?: "/data/models/${model.fileName}"
-        val params = _uiState.value.inferenceParams
-        ggufEngine.load(
-            modelPath = path,
-            params = com.masterllm.runtime.gguf.InferenceParams(
-                minP = params.minP,
-                temperature = params.temperature,
-                storeChats = params.storeChats,
-                contextSize = params.contextSize?.toLong() ?: 2048L,
-                chatTemplate = params.systemPrompt,
-                numThreads = params.numThreads,
-                useMmap = true,
-                useMlock = false
+        if (_uiState.value.selectedModelId != textRuntimeModel.id) {
+            _uiState.update { it.copy(selectedModelId = textRuntimeModel.id) }
+        }
+
+        var loadDurationMs = 0L
+        var replayedMessages = 0
+        if (loadedModelId != textRuntimeModel.id || !ggufEngine.isModelLoaded()) {
+            val path = textRuntimeModel.localPath ?: "/data/models/${textRuntimeModel.fileName}"
+
+            val loadStartedAtNs = System.nanoTime()
+            ggufEngine.load(modelPath = path, params = _uiState.value.inferenceParams)
+            loadDurationMs = ((System.nanoTime() - loadStartedAtNs) / 1_000_000L).coerceAtLeast(0L)
+
+            replayedMessages = replayConversationContext(
+                conversationId = session.conversationId,
+                configuredSystemPrompt = _uiState.value.inferenceParams.systemPrompt,
             )
+
+            loadedModelId = textRuntimeModel.id
+        }
+
+        return EngineReadyResult(
+            model = textRuntimeModel,
+            loadDurationMs = loadDurationMs,
+            replayedMessages = replayedMessages,
         )
-        loadedModelId = model.id
     }
-    return model.id
-}
 
-    private fun buildRoleplayPrompt(session: RoleplaySession, userText: String): String {
-        val history = _uiState.value.messages
-            .takeLast(10)
-            .filter { it.role == MessageRole.USER || it.role == MessageRole.ASSISTANT }
-            .joinToString("\n") { "${it.role.name.lowercase()}: ${it.content}" }
-
-        return buildString {
-            appendLine(buildSystemPrompt(session))
-            if (history.isNotBlank()) {
-                appendLine("Conversation history:")
-                appendLine(history)
+    private suspend fun replayConversationContext(
+        conversationId: String,
+        configuredSystemPrompt: String,
+    ): Int {
+        val history = conversationRepository
+            .getMessagesForConversation(conversationId)
+            .first()
+            .filter { message ->
+                !message.isStreaming &&
+                    (message.role == MessageRole.SYSTEM ||
+                        message.role == MessageRole.USER ||
+                        message.role == MessageRole.ASSISTANT)
             }
-            appendLine("user: $userText")
-            append("assistant:")
+            .sortedBy { it.timestamp }
+
+        val trimmedSystemPrompt = configuredSystemPrompt.trim()
+        if (
+            trimmedSystemPrompt.isNotEmpty() &&
+            history.none { it.role == MessageRole.SYSTEM && it.content == trimmedSystemPrompt }
+        ) {
+            ggufEngine.addSystemPrompt(trimmedSystemPrompt)
+        }
+
+        var replayed = 0
+        history.forEach { message ->
+            when (message.role) {
+                MessageRole.SYSTEM -> ggufEngine.addSystemPrompt(message.content)
+                MessageRole.USER -> ggufEngine.addUserMessage(message.content)
+                MessageRole.ASSISTANT -> ggufEngine.addAssistantMessage(message.content)
+                else -> return@forEach
+            }
+            replayed += 1
+        }
+        return replayed
+    }
+
+    private fun resolveBackendLabel(): String {
+        return if (ggufEngine.isModelLoaded()) {
+            "GGUF/${GgufEngine.getLoadedNativeLibraryName()}"
+        } else {
+            "Not loaded"
         }
     }
 
     private fun buildSystemPrompt(session: RoleplaySession): String {
         return buildString {
             appendLine("You are roleplaying as ${session.aiCharacterName}.")
-            if (session.aiCharacterDescription.isNotEmpty())
+            if (session.aiCharacterDescription.isNotEmpty()) {
                 appendLine("Character: ${session.aiCharacterDescription}")
-            if (session.genre.isNotEmpty())
+            }
+            if (session.genre.isNotEmpty()) {
                 appendLine("Genre: ${session.genre}")
-            if (session.premise.isNotEmpty())
+            }
+            if (session.premise.isNotEmpty()) {
                 appendLine("Premise: ${session.premise}")
-            if (session.userCharacterName.isNotEmpty())
+            }
+            if (session.userCharacterName.isNotEmpty()) {
                 appendLine("The user plays as ${session.userCharacterName}.")
-            if (session.userCharacterDescription.isNotEmpty())
+            }
+            if (session.userCharacterDescription.isNotEmpty()) {
                 appendLine("User character: ${session.userCharacterDescription}")
+            }
             appendLine("Write in third person, use *actions* for physical actions.")
             appendLine("Keep responses immersive and in-character.")
         }

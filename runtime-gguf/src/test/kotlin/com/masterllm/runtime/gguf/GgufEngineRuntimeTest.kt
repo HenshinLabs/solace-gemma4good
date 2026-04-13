@@ -9,12 +9,14 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.take
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.test.runTest
+import org.junit.Ignore
 import org.junit.Test
 import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.charset.StandardCharsets
 
+@Ignore("Requires packaged Android native GGUF libraries")
 @OptIn(ExperimentalCoroutinesApi::class)
 class GgufEngineRuntimeTest {
 
@@ -26,29 +28,27 @@ class GgufEngineRuntimeTest {
         val ggufFile = createMinimalGgufFile()
         try {
             val engine = GgufEngine(context)
-            engine.updateRuntimeConfig(
-                engine.getRuntimeConfig().copy(
-                    enableGpuOffload = false,
-                    streamDelayMs = 0L,
-                )
+            engine.load(
+                modelPath = ggufFile.absolutePath,
+                params = InferenceParams(
+                    contextSize = 2048,
+                    numThreads = 1,
+                    useMmap = false,
+                    useMlock = false,
+                ),
             )
-
-            val loadResult = engine.loadModel(
-                path = ggufFile.absolutePath,
-                threadCount = 1,
-                gpuLayers = 0,
-                contextSize = 2048,
-            )
-            assertThat(loadResult.isSuccess).isTrue()
             assertThat(engine.isModelLoaded()).isTrue()
 
-            val output = engine.generate(
-                prompt = "hello on-device runtime",
-                params = InferenceParams(maxTokens = 64),
-            ).take(32).toList().joinToString(separator = "")
+            val output = engine
+                .getResponseAsFlow("hello on-device runtime")
+                .take(32)
+                .toList()
+                .joinToString(separator = "")
 
             assertThat(output).isNotEmpty()
             assertThat(output.length).isGreaterThan(16)
+
+            engine.close()
         } finally {
             ggufFile.delete()
         }

@@ -1,8 +1,8 @@
 package com.masterllm.runtime.safetensors
 
+import com.google.gson.JsonParser
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import org.json.JSONObject
 import java.io.File
 import java.io.RandomAccessFile
 import java.nio.ByteBuffer
@@ -99,14 +99,16 @@ class SafetensorsEngine @Inject constructor() {
             val headerBytes = ByteArray(headerSize.toInt())
             raf.readFully(headerBytes)
             val headerJson = String(headerBytes, StandardCharsets.UTF_8)
-            val root = JSONObject(headerJson)
+            val root = JsonParser.parseString(headerJson).asJsonObject
 
             val metadataMap = mutableMapOf<String, String>()
-            root.optJSONObject("__metadata__")?.let { meta ->
-                val keys = meta.keys()
-                while (keys.hasNext()) {
-                    val key = keys.next()
-                    metadataMap[key] = meta.optString(key)
+            root.getAsJsonObject("__metadata__")?.let { meta ->
+                for ((key, value) in meta.entrySet()) {
+                    metadataMap[key] = if (value.isJsonPrimitive && value.asJsonPrimitive.isString) {
+                        value.asString
+                    } else {
+                        value.toString()
+                    }
                 }
             }
 
@@ -115,33 +117,33 @@ class SafetensorsEngine @Inject constructor() {
             val dtypeHistogram = linkedMapOf<String, Int>()
             var totalTensorBytes = 0L
 
-            val keys = root.keys()
-            while (keys.hasNext()) {
-                val key = keys.next()
+            for ((key, tensorElement) in root.entrySet()) {
                 if (key == "__metadata__") continue
 
-                val tensorObj = root.optJSONObject(key)
-                    ?: throw IllegalArgumentException("Tensor entry '$key' is not an object")
+                require(tensorElement.isJsonObject) {
+                    "Tensor entry '$key' is not an object"
+                }
+                val tensorObj = tensorElement.asJsonObject
 
-                val dtype = tensorObj.optString("dtype")
+                val dtype = tensorObj.get("dtype")?.asString.orEmpty()
                 require(dtype.isNotBlank()) { "Tensor '$key' missing dtype" }
 
-                val shapeJson = tensorObj.optJSONArray("shape")
+                val shapeJson = tensorObj.getAsJsonArray("shape")
                     ?: throw IllegalArgumentException("Tensor '$key' missing shape")
-                val shape = buildList(shapeJson.length()) {
-                    for (index in 0 until shapeJson.length()) {
-                        add(shapeJson.optLong(index))
+                val shape = buildList(shapeJson.size()) {
+                    for (index in 0 until shapeJson.size()) {
+                        add(shapeJson[index].asLong)
                     }
                 }
 
-                val offsets = tensorObj.optJSONArray("data_offsets")
+                val offsets = tensorObj.getAsJsonArray("data_offsets")
                     ?: throw IllegalArgumentException("Tensor '$key' missing data_offsets")
-                require(offsets.length() == 2) {
-                    "Tensor '$key' has invalid data_offsets length ${offsets.length()}"
+                require(offsets.size() == 2) {
+                    "Tensor '$key' has invalid data_offsets length ${offsets.size()}"
                 }
 
-                val relativeStart = offsets.optLong(0)
-                val relativeEnd = offsets.optLong(1)
+                val relativeStart = offsets[0].asLong
+                val relativeEnd = offsets[1].asLong
                 require(relativeStart >= 0L && relativeEnd >= 0L && relativeEnd >= relativeStart) {
                     "Tensor '$key' has invalid offsets [$relativeStart, $relativeEnd]"
                 }

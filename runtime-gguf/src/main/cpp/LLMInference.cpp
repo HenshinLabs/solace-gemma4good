@@ -72,10 +72,11 @@ void LLMInference::loadModel(
     _formattedMessages = std::vector<char>(llama_n_ctx(_ctx));
     _messages.clear();
     
-    if (chatTemplate == nullptr) {
-        _chatTemplate = llama_model_chat_template(_model, nullptr);
+    if (chatTemplate == nullptr || std::strlen(chatTemplate) == 0) {
+        const char *modelTemplate = llama_model_chat_template(_model, nullptr);
+        _chatTemplate = modelTemplate != nullptr ? modelTemplate : "";
     } else {
-        _chatTemplate = strdup(chatTemplate);
+        _chatTemplate = chatTemplate;
     }
     
     _storeChats = storeChats;

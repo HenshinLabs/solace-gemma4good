@@ -146,6 +146,9 @@ private fun ChatPane(
 ) {
     val listState = rememberLazyListState()
     var modelMenuExpanded by remember { mutableStateOf(false) }
+    val selectedModel = remember(state.selectedModelId, state.availableModels) {
+        state.availableModels.firstOrNull { it.id == state.selectedModelId }
+    }
 
     // Auto-scroll on new messages
     LaunchedEffect(state.messages.size, state.streamingText) {
@@ -166,11 +169,22 @@ private fun ChatPane(
                     }
                 },
                 title = {
-                    Text(
-                        text = state.currentConversation?.title ?: "Chat",
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
+                    Column {
+                        Text(
+                            text = state.currentConversation?.title ?: "Chat",
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        selectedModel?.let { model ->
+                            Text(
+                                text = "Model: ${model.displayName.ifBlank { model.repoId }}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.65f),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                    }
                 },
             actions = {
                 // Model config button
@@ -233,6 +247,12 @@ private fun ChatPane(
             contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
+            state.generationStatus?.let { status ->
+                item(key = "generation_status") {
+                    GenerationStatusCard(status)
+                }
+            }
+
             items(state.messages, key = { it.id }) { msg ->
                 MessageBubble(msg)
             }
@@ -279,6 +299,31 @@ private fun ChatPane(
 }
 
 @Composable
+private fun GenerationStatusCard(status: String) {
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.secondaryContainer,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(16.dp),
+                strokeWidth = 2.dp,
+            )
+            Spacer(Modifier.width(10.dp))
+            Text(
+                text = status,
+                style = MaterialTheme.typography.bodySmall,
+                fontWeight = FontWeight.Medium,
+            )
+        }
+    }
+}
+
+@Composable
 private fun GenerationStatsCard(stats: GenerationStats) {
     ElevatedCard(
         modifier = Modifier
@@ -303,11 +348,19 @@ private fun GenerationStatsCard(stats: GenerationStats) {
                 style = MaterialTheme.typography.bodySmall,
             )
             Text(
+                text = "Model load: ${stats.modelLoadDurationMs} ms | Replayed context messages: ${stats.replayedMessages}",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Text(
                 text = "Prompt tokens: ${stats.promptTokens} | Output tokens: ${stats.generatedTokens} (${stats.generatedChars} chars)",
                 style = MaterialTheme.typography.bodySmall,
             )
             Text(
-                text = "Latency: ${stats.durationMs} ms | Speed: ${"%.2f".format(stats.tokensPerSecond)} tok/s",
+                text = "First token: ${stats.firstTokenLatencyMs} ms | Total: ${stats.durationMs} ms",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Text(
+                text = "Decode speed: ${"%.2f".format(stats.decodeTokensPerSecond)} tok/s | Native speed: ${"%.2f".format(stats.nativeTokensPerSecond)} tok/s",
                 style = MaterialTheme.typography.bodySmall,
                 fontWeight = FontWeight.Medium,
             )

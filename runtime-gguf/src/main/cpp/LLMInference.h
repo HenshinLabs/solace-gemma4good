@@ -2,6 +2,7 @@
 
 #include <llama.h>
 #include <common.h>
+#include <chat.h>
 #include <string>
 #include <vector>
 
@@ -24,7 +25,7 @@ private:
     // Prompt tokens
     std::vector<llama_token> _promptTokens;
     
-    const char* _chatTemplate = nullptr;
+    std::string _chatTemplate;
     std::string _response;
     std::string _cacheResponseTokens;
     
