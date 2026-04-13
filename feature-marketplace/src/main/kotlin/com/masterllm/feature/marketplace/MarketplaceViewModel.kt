@@ -193,15 +193,15 @@ class MarketplaceViewModel @Inject constructor(
             }
             is MarketplaceAction.FormatFilterChanged -> {
                 _uiState.update { it.copy(selectedFormatFilter = action.filter) }
-                applyLocalFiltersToCurrentPage()
+                searchModels(_uiState.value.searchQuery, resetPage = true)
             }
             is MarketplaceAction.SizeFilterChanged -> {
                 _uiState.update { it.copy(selectedSizeFilter = action.filter) }
-                applyLocalFiltersToCurrentPage()
+                searchModels(_uiState.value.searchQuery, resetPage = true)
             }
             is MarketplaceAction.TaskFilterChanged -> {
                 _uiState.update { it.copy(selectedTaskFilter = action.task) }
-                applyLocalFiltersToCurrentPage()
+                searchModels(_uiState.value.searchQuery, resetPage = true)
             }
             MarketplaceAction.NextPage -> {
                 val state = _uiState.value
@@ -348,17 +348,34 @@ class MarketplaceViewModel @Inject constructor(
                         sizeFilter = current.selectedSizeFilter,
                     )
 
-                    val maxPage = if (filteredAll.isEmpty()) 0 else (filteredAll.size - 1) / PAGE_SIZE
-                    val resolvedPage = requestedPageIndex.coerceIn(0, maxPage)
-                    val pageStart = resolvedPage * PAGE_SIZE
-                    val pagedResults = filteredAll.drop(pageStart).take(PAGE_SIZE)
+                    val resolvedPage: Int
+                    val pagedResults: List<HfModelInfo>
+                    val hasNext: Boolean
+                    val estimatedTotal: Int
 
-                    val hasLocalNextPage = pageStart + pagedResults.size < filteredAll.size
-                    val hasNext = hasLocalNextPage || remoteHasNext
-                    val estimatedTotal = if (!hasNext) {
-                        pageStart + pagedResults.size
+                    if (shouldScanExtraPages) {
+                        val maxPage = if (filteredAll.isEmpty()) 0 else (filteredAll.size - 1) / PAGE_SIZE
+                        resolvedPage = requestedPageIndex.coerceIn(0, maxPage)
+                        val pageStart = resolvedPage * PAGE_SIZE
+                        pagedResults = filteredAll.drop(pageStart).take(PAGE_SIZE)
+
+                        val hasLocalNextPage = pageStart + pagedResults.size < filteredAll.size
+                        val hasFilteredMatches = filteredAll.isNotEmpty()
+                        hasNext = hasLocalNextPage || (remoteHasNext && hasFilteredMatches)
+                        estimatedTotal = when {
+                            !hasFilteredMatches -> 0
+                            !hasNext -> pageStart + pagedResults.size
+                            else -> maxOf(filteredAll.size, pageStart + pagedResults.size + PAGE_SIZE)
+                        }
                     } else {
-                        maxOf(filteredAll.size, pageStart + pagedResults.size + PAGE_SIZE)
+                        resolvedPage = requestedPageIndex
+                        pagedResults = filteredAll.take(PAGE_SIZE)
+                        hasNext = remoteHasNext && pagedResults.isNotEmpty()
+                        estimatedTotal = when {
+                            pagedResults.isEmpty() -> 0
+                            hasNext -> ((resolvedPage + 1) * PAGE_SIZE) + PAGE_SIZE
+                            else -> (resolvedPage * PAGE_SIZE) + pagedResults.size
+                        }
                     }
 
                     current.copy(
@@ -497,17 +514,48 @@ class MarketplaceViewModel @Inject constructor(
 
     private fun inferModelFormats(model: HfModelInfo): Set<ModelFormatFilter> {
         val files = model.siblings.map { it.rfilename.lowercase() }
-        val hasGguf = files.any { it.endsWith(".gguf") }
-        val hasSafeTensors = files.any { it.endsWith(".safetensors") }
-        val hasDiffusersMarker = files.any { it == "model_index.json" || it.endsWith("/model_index.json") }
+        val metadataSearchSpace = buildString {
+            append(model.modelId.lowercase())
+            append(' ')
+            append(model.pipelineTag.lowercase())
+            append(' ')
+            append(model.tags.joinToString(" ").lowercase())
+            append(' ')
+            append(model.description.lowercase())
+        }
+
+        val hasGgufFile = files.any { it.endsWith(".gguf") }
+        val hasSafeTensorsFile = files.any { it.endsWith(".safetensors") }
+        val hasDiffusersMarkerFile = files.any {
+            it == "model_index.json" ||
+                it.endsWith("/model_index.json") ||
+                it.startsWith("unet/") ||
+                it.startsWith("vae/") ||
+                it.startsWith("text_encoder/") ||
+                it.startsWith("text_encoder_2/")
+        }
+
+        val metadataSuggestsGguf = metadataSearchSpace.contains("gguf")
+        val metadataSuggestsSafeTensors = metadataSearchSpace.contains("safetensors")
+        val metadataSuggestsDiffusers =
+            metadataSearchSpace.contains("diffusers") ||
+                metadataSearchSpace.contains("stable-diffusion") ||
+                metadataSearchSpace.contains("text-to-image") ||
+                metadataSearchSpace.contains("image-to-image")
+
+        val hasGguf = hasGgufFile || metadataSuggestsGguf
+        val hasSafeTensors = hasSafeTensorsFile || metadataSuggestsSafeTensors
+        val hasDiffusers = hasDiffusersMarkerFile || metadataSuggestsDiffusers
 
         val formats = mutableSetOf<ModelFormatFilter>()
         if (hasGguf) formats += ModelFormatFilter.GGUF
-        if (hasSafeTensors && hasDiffusersMarker) {
-            formats += ModelFormatFilter.DIFFUSERS
-        } else if (hasSafeTensors) {
-            formats += ModelFormatFilter.SAFETENSORS
+
+        when {
+            hasDiffusers && hasSafeTensors -> formats += ModelFormatFilter.DIFFUSERS
+            hasDiffusers && !hasSafeTensors -> formats += ModelFormatFilter.DIFFUSERS
+            hasSafeTensors -> formats += ModelFormatFilter.SAFETENSORS
         }
+
         return formats
     }
 

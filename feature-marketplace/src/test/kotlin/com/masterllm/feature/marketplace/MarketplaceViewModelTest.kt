@@ -254,6 +254,68 @@ class MarketplaceViewModelTest {
         assertThat(vm.uiState.value.currentPage).isEqualTo(0)
     }
 
+    @Test
+    fun formatFilter_gguf_worksWhenSearchResultsLackSiblings() = runTest(dispatcher) {
+        val modelRepository = InMemoryModelRepository()
+        val settingsRepository = InMemorySettingsRepository(token = "hf_test")
+        val api = FakeHuggingFaceApi().apply {
+            searchResponses["Qwen gguf"] = listOf(
+                HfModelResponse(
+                    modelId = "bartowski/Qwen2.5-0.5B-Instruct-GGUF",
+                    id = "bartowski/Qwen2.5-0.5B-Instruct-GGUF",
+                    author = "bartowski",
+                    siblings = null,
+                    tags = listOf("gguf", "text-generation"),
+                )
+            )
+        }
+
+        val vm = createViewModel(modelRepository, settingsRepository, api)
+        advanceUntilIdle()
+
+        vm.onAction(MarketplaceAction.SearchQueryChanged("Qwen"))
+        vm.onAction(MarketplaceAction.Search)
+        advanceUntilIdle()
+
+        vm.onAction(MarketplaceAction.FormatFilterChanged(ModelFormatFilter.GGUF))
+        advanceUntilIdle()
+
+        val state = vm.uiState.value
+        assertThat(state.searchResults).isNotEmpty()
+        assertThat(state.searchResults.first().modelId).contains("Qwen2.5-0.5B")
+    }
+
+    @Test
+    fun filteredResults_noneOnCurrentScan_resetsTotalsAndPagination() = runTest(dispatcher) {
+        val modelRepository = InMemoryModelRepository()
+        val settingsRepository = InMemorySettingsRepository(token = "hf_test")
+        val api = FakeHuggingFaceApi().apply {
+            searchResponses["Qwen gguf"] = List(20) { index ->
+                modelResponse(
+                    modelId = "repo/qwen-page-$index",
+                    siblings = listOf(HfSiblingResponse("weights-$index.safetensors", 100L + index)),
+                )
+            }
+        }
+
+        val vm = createViewModel(modelRepository, settingsRepository, api)
+        advanceUntilIdle()
+
+        vm.onAction(MarketplaceAction.SearchQueryChanged("Qwen"))
+        vm.onAction(MarketplaceAction.Search)
+        advanceUntilIdle()
+
+        vm.onAction(MarketplaceAction.FormatFilterChanged(ModelFormatFilter.GGUF))
+        advanceUntilIdle()
+
+        val state = vm.uiState.value
+        assertThat(state.searchResults).isEmpty()
+        assertThat(state.totalResults).isEqualTo(0)
+        assertThat(state.lastSearchResultsCount).isEqualTo(0)
+        assertThat(state.hasNextPage).isFalse()
+        assertThat(state.currentPage).isEqualTo(0)
+    }
+
     private fun createViewModel(
         modelRepository: InMemoryModelRepository,
         settingsRepository: InMemorySettingsRepository,
