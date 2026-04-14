@@ -2,12 +2,15 @@ package com.masterllm.app.navigation
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -168,54 +171,78 @@ private fun HomeHubScreen(
     onOpenImageGen: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    Column(
+    LazyColumn(
         modifier = modifier
-            .padding(16.dp),
+            .statusBarsPadding()
+            .fillMaxSize(),
+        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Text(
-            text = "Create with local AI",
-            style = MaterialTheme.typography.headlineSmall,
+        item {
+            ElevatedCard(
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Column(modifier = Modifier.padding(20.dp)) {
+                    Text(
+                        text = "Create with local AI",
+                        style = MaterialTheme.typography.headlineSmall,
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = "Continue your chat session, open roleplay, or generate images from one place.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+
+        item {
+            HomeQuickActionCard(
+                title = "Chat",
+                subtitle = "Pick up your existing conversation session",
+                icon = Icons.Default.Home,
+                onClick = onOpenChat,
+            )
+        }
+
+        item {
+            HomeQuickActionCard(
+                title = "Roleplay",
+                subtitle = "Open immersive character sessions",
+                icon = Icons.Default.Person,
+                onClick = onOpenRoleplay,
+            )
+        }
+
+        item {
+            HomeQuickActionCard(
+                title = "Image Generation",
+                subtitle = "Run Diffusers models directly on-device",
+                icon = Icons.Default.Search,
+                onClick = onOpenImageGen,
+            )
+        }
+    }
+}
+
+@Composable
+private fun HomeQuickActionCard(
+    title: String,
+    subtitle: String,
+    icon: ImageVector,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    ElevatedCard(
+        modifier = modifier.fillMaxWidth(),
+        onClick = onClick,
+    ) {
+        ListItem(
+            headlineContent = { Text(title) },
+            supportingContent = { Text(subtitle) },
+            leadingContent = { Icon(icon, contentDescription = null) },
+            trailingContent = { Icon(Icons.Default.KeyboardArrowRight, contentDescription = null) },
         )
-        Text(
-            text = "Continue chat, jump into roleplay, or generate images from one place.",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-
-        Spacer(modifier = Modifier.height(4.dp))
-
-        ElevatedCard(
-            modifier = Modifier.fillMaxWidth(),
-            onClick = onOpenChat,
-        ) {
-            ListItem(
-                headlineContent = { Text("Chat") },
-                supportingContent = { Text("Pick up your existing conversation session") },
-                leadingContent = { Icon(Icons.Default.Home, contentDescription = null) },
-            )
-        }
-
-        ElevatedCard(
-            modifier = Modifier.fillMaxWidth(),
-            onClick = onOpenRoleplay,
-        ) {
-            ListItem(
-                headlineContent = { Text("Roleplay") },
-                supportingContent = { Text("Open immersive character sessions") },
-                leadingContent = { Icon(Icons.Default.Person, contentDescription = null) },
-            )
-        }
-
-        ElevatedCard(
-            modifier = Modifier.fillMaxWidth(),
-            onClick = onOpenImageGen,
-        ) {
-            ListItem(
-                headlineContent = { Text("Image Generation") },
-                supportingContent = { Text("Run Diffusers models directly on-device") },
-                leadingContent = { Icon(Icons.Default.Search, contentDescription = null) },
-            )
-        }
     }
 }
