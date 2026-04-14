@@ -1,6 +1,11 @@
 package com.masterllm.app.navigation
 
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.material.icons.Icons
@@ -27,6 +32,7 @@ import com.masterllm.feature.settings.SettingsScreen
 
 /** Route identifiers for each top-level destination. */
 object Routes {
+    const val HOME = "home"
     const val CHAT = "chat"
     const val MARKETPLACE = "marketplace"
     const val ROLEPLAY = "roleplay"
@@ -42,9 +48,9 @@ enum class TopLevelDestination(
     val icon: ImageVector,
     val label: String,
 ) {
+    HOME(Routes.HOME, Icons.Default.Home, "Home"),
     CHAT(Routes.CHAT, Icons.Default.Home, "Chat"),
     MARKETPLACE(Routes.MARKETPLACE, Icons.Default.Search, "Explore"),
-    ROLEPLAY(Routes.ROLEPLAY, Icons.Default.Person, "Roleplay"),
     SETTINGS(Routes.SETTINGS, Icons.Default.Settings, "Settings"),
 }
 
@@ -97,20 +103,37 @@ fun MasterLLMApp(modifier: Modifier = Modifier) {
     ) { innerPadding ->
         NavHost(
             navController = navController,
-            startDestination = Routes.CHAT,
+            startDestination = Routes.HOME,
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding),
         ) {
             // ── Top-level tabs ──────────────────────────────────
+            composable(Routes.HOME) {
+                HomeHubScreen(
+                    modifier = Modifier.fillMaxSize(),
+                    onOpenChat = {
+                        navController.navigate(Routes.CHAT) {
+                            popUpTo(navController.graph.findStartDestination().id) {
+                                saveState = true
+                            }
+                            launchSingleTop = true
+                            restoreState = true
+                        }
+                    },
+                    onOpenRoleplay = {
+                        navController.navigate(Routes.ROLEPLAY)
+                    },
+                    onOpenImageGen = {
+                        navController.navigate(Routes.IMAGE_GEN)
+                    },
+                )
+            }
             composable(Routes.CHAT) {
                 ChatScreen(modifier = Modifier.fillMaxSize())
             }
             composable(Routes.MARKETPLACE) {
                 MarketplaceScreen(modifier = Modifier.fillMaxSize())
-            }
-            composable(Routes.ROLEPLAY) {
-                RoleplayScreen(modifier = Modifier.fillMaxSize())
             }
             composable(Routes.SETTINGS) {
                 SettingsScreen(
@@ -131,6 +154,68 @@ fun MasterLLMApp(modifier: Modifier = Modifier) {
             composable(Routes.MODEL_MANAGER) {
                 ModelManagerScreen(modifier = Modifier.fillMaxSize())
             }
+            composable(Routes.ROLEPLAY) {
+                RoleplayScreen(modifier = Modifier.fillMaxSize())
+            }
+        }
+    }
+}
+
+@Composable
+private fun HomeHubScreen(
+    onOpenChat: () -> Unit,
+    onOpenRoleplay: () -> Unit,
+    onOpenImageGen: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier = modifier
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Text(
+            text = "Create with local AI",
+            style = MaterialTheme.typography.headlineSmall,
+        )
+        Text(
+            text = "Continue chat, jump into roleplay, or generate images from one place.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
+        Spacer(modifier = Modifier.height(4.dp))
+
+        ElevatedCard(
+            modifier = Modifier.fillMaxWidth(),
+            onClick = onOpenChat,
+        ) {
+            ListItem(
+                headlineContent = { Text("Chat") },
+                supportingContent = { Text("Pick up your existing conversation session") },
+                leadingContent = { Icon(Icons.Default.Home, contentDescription = null) },
+            )
+        }
+
+        ElevatedCard(
+            modifier = Modifier.fillMaxWidth(),
+            onClick = onOpenRoleplay,
+        ) {
+            ListItem(
+                headlineContent = { Text("Roleplay") },
+                supportingContent = { Text("Open immersive character sessions") },
+                leadingContent = { Icon(Icons.Default.Person, contentDescription = null) },
+            )
+        }
+
+        ElevatedCard(
+            modifier = Modifier.fillMaxWidth(),
+            onClick = onOpenImageGen,
+        ) {
+            ListItem(
+                headlineContent = { Text("Image Generation") },
+                supportingContent = { Text("Run Diffusers models directly on-device") },
+                leadingContent = { Icon(Icons.Default.Search, contentDescription = null) },
+            )
         }
     }
 }

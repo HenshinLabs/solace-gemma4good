@@ -197,6 +197,17 @@ private fun BrowseTab(
                 .padding(16.dp),
         )
 
+        QuickSearchSuggestions(
+            currentQuery = state.searchQuery,
+            onSuggestionClick = { suggestion ->
+                onAction(MarketplaceAction.SearchQueryChanged(suggestion))
+                onAction(MarketplaceAction.Search)
+            },
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp),
+        )
+
         // Compact action buttons row
         CompactControlsRow(
             profile = state.deviceProfile,
@@ -315,6 +326,39 @@ private fun SearchBarWithStatus(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
                 modifier = Modifier.padding(top = 4.dp, start = 4.dp),
+            )
+        }
+    }
+}
+
+@Composable
+private fun QuickSearchSuggestions(
+    currentQuery: String,
+    onSuggestionClick: (String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val suggestions = remember {
+        listOf("llama", "qwen", "mistral", "gemma", "stable diffusion", "sdxl")
+    }
+
+    if (currentQuery.length > 24) return
+
+    LazyRow(
+        modifier = modifier,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        contentPadding = PaddingValues(bottom = 8.dp),
+    ) {
+        items(suggestions) { suggestion ->
+            AssistChip(
+                onClick = { onSuggestionClick(suggestion) },
+                label = { Text(suggestion) },
+                leadingIcon = {
+                    Icon(
+                        Icons.Default.Search,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp),
+                    )
+                },
             )
         }
     }
@@ -1160,7 +1204,7 @@ private fun CompactControlsRow(
             onClick = onFiltersClick,
             label = {
                 Text(
-                    if (activeFiltersCount > 0) "Filters ($activeFiltersCount)" else "Filters"
+                    if (activeFiltersCount > 0) "Search controls ($activeFiltersCount)" else "Search controls"
                 )
             },
             leadingIcon = {
@@ -1172,21 +1216,10 @@ private fun CompactControlsRow(
             },
         )
 
-        // Sort Button
-        AssistChip(
-            onClick = onFiltersClick,
-            label = { Text(selectedSort.label) },
-            leadingIcon = {
-                Icon(
-                    when (selectedSort) {
-                        MarketplaceSort.TRENDING -> Icons.Default.TrendingUp
-                        MarketplaceSort.RECENT -> Icons.Default.Schedule
-                        MarketplaceSort.MOST_DOWNLOADED -> Icons.Default.Download
-                    },
-                    contentDescription = null,
-                    modifier = Modifier.size(18.dp),
-                )
-            },
+        Text(
+            text = "Sort: ${selectedSort.label}",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.75f),
         )
     }
 }
@@ -1213,7 +1246,7 @@ private fun DiscoveryControlsDialog(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
-                    text = "Search Filters",
+                    text = "Search & Sort",
                     style = MaterialTheme.typography.headlineSmall,
                     fontWeight = FontWeight.SemiBold,
                 )

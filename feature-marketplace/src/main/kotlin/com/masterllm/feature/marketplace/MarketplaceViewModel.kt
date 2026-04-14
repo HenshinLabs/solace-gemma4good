@@ -16,12 +16,14 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.ResponseBody
 import java.io.File
+import java.io.FileOutputStream
 import java.io.IOException
 import java.util.UUID
 import javax.inject.Inject
@@ -804,6 +806,42 @@ class MarketplaceViewModel @Inject constructor(
                 val paramCount = extractParamCount(modelInfo.modelId)
                 val format = detectDownloadFormat(modelInfo, file)
 
+                val targetFile = buildModelOutputFile(modelInfo.modelId, file.rfilename)
+                localTargetFile = targetFile
+
+                val expectedTotalBytes = file.size?.takeIf { it > 0L }
+                var resumeOffsetBytes = targetFile
+                    .takeIf { it.exists() }
+                    ?.length()
+                    ?.coerceAtLeast(0L)
+                    ?: 0L
+
+                if (expectedTotalBytes != null && resumeOffsetBytes >= expectedTotalBytes) {
+                    val existing = modelRepository.getModelByRepoAndFile(modelInfo.modelId, file.rfilename)
+                    val modelId = existing?.id ?: UUID.randomUUID().toString()
+                    persistedModelId = modelId
+
+                    modelRepository.saveModel(
+                        (existing ?: LlmModel(id = modelId)).copy(
+                            id = modelId,
+                            repoId = modelInfo.modelId,
+                            fileName = file.rfilename,
+                            displayName = buildDisplayName(modelInfo, format, quant),
+                            format = format,
+                            sizeBytes = expectedTotalBytes,
+                            quantization = if (format == ModelFormat.GGUF) quant else "",
+                            downloadState = DownloadState.DOWNLOADED,
+                            parameterCount = paramCount,
+                            localPath = targetFile.absolutePath,
+                            description = modelInfo.description,
+                            downloadedAt = System.currentTimeMillis(),
+                        ),
+                    )
+
+                    finishDownloadTelemetry(downloadKey)
+                    return@launch
+                }
+
                 val existing = modelRepository.getModelByRepoAndFile(modelInfo.modelId, file.rfilename)
                 val modelId = existing?.id ?: UUID.randomUUID().toString()
                 persistedModelId = modelId
@@ -818,6 +856,7 @@ class MarketplaceViewModel @Inject constructor(
                     quantization = if (format == ModelFormat.GGUF) quant else "",
                     downloadState = DownloadState.DOWNLOADING,
                     parameterCount = paramCount,
+                    localPath = targetFile.absolutePath,
                     description = modelInfo.description,
                     downloadedAt = System.currentTimeMillis(),
                 )
@@ -827,37 +866,87 @@ class MarketplaceViewModel @Inject constructor(
                 val token = settingsRepository.getHfToken().first()
                 val authHeader = toBearerAuthHeader(token)
 
-                val response = huggingFaceApi.downloadFile(
+                var requestRange = if (resumeOffsetBytes > 0L) {
+                    "bytes=${resumeOffsetBytes}-"
+                } else {
+                    null
+                }
+
+                var response = huggingFaceApi.downloadFile(
                     repoId = modelInfo.modelId,
                     fileName = file.rfilename,
                     auth = authHeader,
+                    range = requestRange,
                 )
+
+                if (response.code() == 416 && expectedTotalBytes != null && resumeOffsetBytes >= expectedTotalBytes) {
+                    modelRepository.updateDownloadState(
+                        model.id,
+                        DownloadState.DOWNLOADED,
+                        targetFile.absolutePath,
+                    )
+                    finishDownloadTelemetry(downloadKey)
+                    return@launch
+                }
+
+                if (requestRange != null && response.code() == 200) {
+                    // Server ignored range; restart cleanly from byte 0.
+                    targetFile.delete()
+                    resumeOffsetBytes = 0L
+                    requestRange = null
+                    response = huggingFaceApi.downloadFile(
+                        repoId = modelInfo.modelId,
+                        fileName = file.rfilename,
+                        auth = authHeader,
+                        range = null,
+                    )
+                }
 
                 if (!response.isSuccessful) {
                     throw IOException("Download failed with HTTP ${response.code()}")
                 }
 
                 val body = response.body() ?: throw IOException("Empty download body")
-                localTargetFile = buildModelOutputFile(modelInfo.modelId, file.rfilename)
                 writeToDiskWithProgress(
                     downloadKey = downloadKey,
                     modelId = modelInfo.modelId,
                     fileName = file.rfilename,
                     responseBody = body,
-                    targetFile = localTargetFile,
+                    targetFile = targetFile,
                     plannedFiles = listOf(file.rfilename),
                     currentFileIndex = 1,
                     totalFiles = 1,
+                    appendToFile = resumeOffsetBytes > 0L,
+                    initialBytesDownloaded = resumeOffsetBytes,
+                    expectedTotalBytes = expectedTotalBytes,
                 )
 
                 modelRepository.updateDownloadState(
                     model.id,
                     DownloadState.DOWNLOADED,
-                    localTargetFile.absolutePath,
+                    targetFile.absolutePath,
                 )
+            } catch (cancelled: CancellationException) {
+                persistedModelId?.let {
+                    modelRepository.updateDownloadState(it, DownloadState.FAILED, localTargetFile?.absolutePath)
+                }
+                _uiState.update {
+                    it.copy(error = "Download paused. Tap download again to resume.")
+                }
+                throw cancelled
+            } catch (ioe: IOException) {
+                persistedModelId?.let {
+                    modelRepository.updateDownloadState(it, DownloadState.FAILED, localTargetFile?.absolutePath)
+                }
+                _uiState.update {
+                    it.copy(
+                        error = "Download interrupted. Tap download again to resume (${ioe.message ?: "network error"}).",
+                    )
+                }
             } catch (e: Exception) {
-                localTargetFile?.takeIf { it.exists() }?.delete()
-                persistedModelId?.let { modelRepository.updateDownloadState(it, DownloadState.FAILED, null) }
+                persistedModelId?.let {
+                    modelRepository.updateDownloadState(it, DownloadState.FAILED, localTargetFile?.absolutePath)
+                }
                 _uiState.update {
                     it.copy(
                         error = "Download failed: ${e.message ?: "unknown error"}",
@@ -920,17 +1009,78 @@ class MarketplaceViewModel @Inject constructor(
                 val totalFiles = filesToDownload.size.coerceAtLeast(1)
 
                 filesToDownload.forEachIndexed { index, bundleFile ->
-                    val response = huggingFaceApi.downloadFile(
+                    val targetFile = buildModelOutputFile(modelInfo.modelId, bundleFile.rfilename)
+                    val expectedTotalBytes = bundleFile.size?.takeIf { it > 0L }
+
+                    var existingBytes = targetFile
+                        .takeIf { it.exists() }
+                        ?.length()
+                        ?.coerceAtLeast(0L)
+                        ?: 0L
+
+                    if (expectedTotalBytes != null && existingBytes >= expectedTotalBytes) {
+                        updateDownloadTelemetry(
+                            downloadKey = downloadKey,
+                            modelId = modelInfo.modelId,
+                            fileName = bundleFile.rfilename,
+                            overallProgress = ((index + 1).toFloat() / totalFiles.toFloat()).coerceIn(0f, 1f),
+                            bytesDownloaded = expectedTotalBytes,
+                            totalBytes = expectedTotalBytes,
+                            speedBytesPerSec = 0L,
+                            currentFileIndex = index + 1,
+                            totalFiles = totalFiles,
+                            plannedFiles = plannedFiles,
+                        )
+                        return@forEachIndexed
+                    }
+
+                    var rangeHeader = if (existingBytes > 0L) {
+                        "bytes=${existingBytes}-"
+                    } else {
+                        null
+                    }
+
+                    var response = huggingFaceApi.downloadFile(
                         repoId = modelInfo.modelId,
                         fileName = bundleFile.rfilename,
                         auth = authHeader,
+                        range = rangeHeader,
                     )
+
+                    if (response.code() == 416 && expectedTotalBytes != null && existingBytes >= expectedTotalBytes) {
+                        updateDownloadTelemetry(
+                            downloadKey = downloadKey,
+                            modelId = modelInfo.modelId,
+                            fileName = bundleFile.rfilename,
+                            overallProgress = ((index + 1).toFloat() / totalFiles.toFloat()).coerceIn(0f, 1f),
+                            bytesDownloaded = expectedTotalBytes,
+                            totalBytes = expectedTotalBytes,
+                            speedBytesPerSec = 0L,
+                            currentFileIndex = index + 1,
+                            totalFiles = totalFiles,
+                            plannedFiles = plannedFiles,
+                        )
+                        return@forEachIndexed
+                    }
+
+                    if (rangeHeader != null && response.code() == 200) {
+                        // Range ignored by server, restart this file.
+                        targetFile.delete()
+                        existingBytes = 0L
+                        rangeHeader = null
+                        response = huggingFaceApi.downloadFile(
+                            repoId = modelInfo.modelId,
+                            fileName = bundleFile.rfilename,
+                            auth = authHeader,
+                            range = null,
+                        )
+                    }
+
                     if (!response.isSuccessful) {
                         throw IOException("Diffusers download failed for ${bundleFile.rfilename}: HTTP ${response.code()}")
                     }
 
                     val body = response.body() ?: throw IOException("Empty body for ${bundleFile.rfilename}")
-                    val targetFile = buildModelOutputFile(modelInfo.modelId, bundleFile.rfilename)
 
                     writeToDiskWithProgress(
                         downloadKey = downloadKey,
@@ -943,6 +1093,9 @@ class MarketplaceViewModel @Inject constructor(
                         totalFiles = totalFiles,
                         progressPrefix = index.toFloat() / totalFiles.toFloat(),
                         progressSpan = 1f / totalFiles.toFloat(),
+                        appendToFile = existingBytes > 0L,
+                        initialBytesDownloaded = existingBytes,
+                        expectedTotalBytes = expectedTotalBytes,
                     )
                 }
 
@@ -951,9 +1104,23 @@ class MarketplaceViewModel @Inject constructor(
                     DownloadState.DOWNLOADED,
                     outputRoot.absolutePath,
                 )
+            } catch (cancelled: CancellationException) {
+                persistedModelId?.let {
+                    modelRepository.updateDownloadState(it, DownloadState.FAILED, outputRoot?.absolutePath)
+                }
+                _uiState.update {
+                    it.copy(error = "Diffusers bundle paused. Tap download again to resume.")
+                }
+                throw cancelled
+            } catch (ioe: IOException) {
+                persistedModelId?.let {
+                    modelRepository.updateDownloadState(it, DownloadState.FAILED, outputRoot?.absolutePath)
+                }
+                _uiState.update {
+                    it.copy(error = "Diffusers bundle interrupted. Tap download again to resume (${ioe.message ?: "network error"}).")
+                }
             } catch (e: Exception) {
-                outputRoot?.takeIf { it.exists() }?.deleteRecursively()
-                persistedModelId?.let { modelRepository.updateDownloadState(it, DownloadState.FAILED, null) }
+                persistedModelId?.let { modelRepository.updateDownloadState(it, DownloadState.FAILED, outputRoot?.absolutePath) }
                 _uiState.update { it.copy(error = "Diffusers bundle download failed: ${e.message ?: "unknown error"}") }
             } finally {
                 finishDownloadTelemetry(downloadKey)
@@ -1136,24 +1303,29 @@ class MarketplaceViewModel @Inject constructor(
         totalFiles: Int,
         progressPrefix: Float = 0f,
         progressSpan: Float = 1f,
+        appendToFile: Boolean = false,
+        initialBytesDownloaded: Long = 0L,
+        expectedTotalBytes: Long? = null,
     ) = withContext(Dispatchers.IO) {
-        val totalBytes = responseBody.contentLength().takeIf { it > 0L }
+        val responseBytes = responseBody.contentLength().takeIf { it > 0L }
+        val totalBytes = expectedTotalBytes ?: responseBytes?.let { initialBytesDownloaded + it }
         var copiedBytes = 0L
         var lastSampleTimeMs = System.currentTimeMillis()
-        var lastSampleBytes = 0L
+        var lastSampleBytes = initialBytesDownloaded
 
         responseBody.byteStream().use { input ->
-            targetFile.outputStream().use { output ->
+            FileOutputStream(targetFile, appendToFile).buffered().use { output ->
                 val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
                 while (true) {
                     val read = input.read(buffer)
                     if (read <= 0) break
                     output.write(buffer, 0, read)
                     copiedBytes += read
+                    val accumulatedBytes = initialBytesDownloaded + copiedBytes
 
                     val nowMs = System.currentTimeMillis()
                     val localProgress = if (totalBytes != null) {
-                        (copiedBytes.toFloat() / totalBytes.toFloat()).coerceIn(0f, 1f)
+                        (accumulatedBytes.toFloat() / totalBytes.toFloat()).coerceIn(0f, 1f)
                     } else {
                         0f
                     }
@@ -1161,7 +1333,7 @@ class MarketplaceViewModel @Inject constructor(
 
                     val shouldSample = (nowMs - lastSampleTimeMs) >= PROGRESS_SAMPLE_INTERVAL_MS
                     if (shouldSample) {
-                        val deltaBytes = copiedBytes - lastSampleBytes
+                        val deltaBytes = accumulatedBytes - lastSampleBytes
                         val deltaMs = (nowMs - lastSampleTimeMs).coerceAtLeast(1L)
                         val speedBytesPerSec = (deltaBytes * 1000L) / deltaMs
 
@@ -1170,7 +1342,7 @@ class MarketplaceViewModel @Inject constructor(
                             modelId = modelId,
                             fileName = fileName,
                             overallProgress = overallProgress,
-                            bytesDownloaded = copiedBytes,
+                            bytesDownloaded = accumulatedBytes,
                             totalBytes = totalBytes,
                             speedBytesPerSec = speedBytesPerSec,
                             currentFileIndex = currentFileIndex,
@@ -1179,7 +1351,7 @@ class MarketplaceViewModel @Inject constructor(
                         )
 
                         lastSampleTimeMs = nowMs
-                        lastSampleBytes = copiedBytes
+                        lastSampleBytes = accumulatedBytes
                     }
                 }
                 output.flush()
@@ -1191,7 +1363,7 @@ class MarketplaceViewModel @Inject constructor(
             modelId = modelId,
             fileName = fileName,
             overallProgress = (progressPrefix + progressSpan).coerceIn(0f, 1f),
-            bytesDownloaded = copiedBytes,
+            bytesDownloaded = initialBytesDownloaded + copiedBytes,
             totalBytes = totalBytes,
             speedBytesPerSec = 0L,
             currentFileIndex = currentFileIndex,

@@ -46,5 +46,6 @@ interface HuggingFaceApi {
         @Path("repoId", encoded = true) repoId: String,
         @Path("fileName", encoded = true) fileName: String,
         @Header("Authorization") auth: String? = null,
+        @Header("Range") range: String? = null,
     ): Response<ResponseBody>
 }

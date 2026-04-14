@@ -330,7 +330,7 @@ class ChatViewModel @Inject constructor(
                                 modelPath = modelPath,
                                 params = _uiState.value.inferenceParams,
                                 gpuAccelerationEnabled = gpuAccelerationEnabled,
-                                gpuOffloadLayers = resolveDesiredGpuLayers(),
+                                gpuOffloadLayers = resolveDesiredGpuLayers(model),
                             )
                             loadedModelId = model.id
                             ((System.nanoTime() - startedAt) / 1_000_000L).coerceAtLeast(0L)
@@ -495,7 +495,7 @@ class ChatViewModel @Inject constructor(
                                 modelPath = modelPath,
                                 params = _uiState.value.inferenceParams,
                                 gpuAccelerationEnabled = gpuAccelerationEnabled,
-                                gpuOffloadLayers = resolveDesiredGpuLayers(),
+                                gpuOffloadLayers = resolveDesiredGpuLayers(selectedModel),
                             )
                             loadedModelId = selectedModel.id
                         }
@@ -604,19 +604,37 @@ class ChatViewModel @Inject constructor(
                 val promptTokens = ggufEngine.getContextLengthUsed()
                 val startedAtNs = System.nanoTime()
                 var firstTokenAtNs: Long? = null
+                var streamError: Throwable? = null
 
-                ggufEngine.getResponseAsFlow(text).collect { piece ->
-                    if (!_uiState.value.isGenerating) throw CancellationException("Generation stopped")
-                    if (firstTokenAtNs == null) {
-                        firstTokenAtNs = System.nanoTime()
-                        _uiState.update { state -> state.copy(generationStatus = "Generating response...") }
+                try {
+                    ggufEngine.getResponseAsFlow(text).collect { piece ->
+                        if (!_uiState.value.isGenerating) throw CancellationException("Generation stopped")
+                        if (firstTokenAtNs == null) {
+                            firstTokenAtNs = System.nanoTime()
+                            _uiState.update { state -> state.copy(generationStatus = "Generating response...") }
+                        }
+                        builder.append(piece)
+                        _uiState.update { state -> state.copy(streamingText = builder.toString()) }
                     }
-                    builder.append(piece)
-                    _uiState.update { state -> state.copy(streamingText = builder.toString()) }
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (failure: Throwable) {
+                    streamError = failure
+                    _uiState.update { state ->
+                        state.copy(generationStatus = "Finalizing partial response...")
+                    }
                 }
 
-                val finalText = builder.toString().trim()
+                var finalText = sanitizeGeneratedText(builder.toString())
+                val responseWasTruncated = streamError != null && finalText.isNotEmpty()
+                if (responseWasTruncated) {
+                    finalText = appendPartialMarker(finalText)
+                }
                 val completedAtNs = System.nanoTime()
+
+                if (streamError != null && finalText.isEmpty()) {
+                    throw streamError as Throwable
+                }
 
                 if (finalText.isNotEmpty()) {
                     val assistantMsg = Message(
@@ -671,6 +689,13 @@ class ChatViewModel @Inject constructor(
                             contextSize = state.inferenceParams.contextSize ?: 2048,
                         ),
                     )
+                }
+
+                if (responseWasTruncated) {
+                    val reason = streamError?.message?.takeIf { it.isNotBlank() } ?: "runtime limit reached"
+                    _uiState.update {
+                        it.copy(error = "Response was partially returned ($reason).")
+                    }
                 }
 
                 if (convo.modelId != targetModelId) {
@@ -938,7 +963,7 @@ class ChatViewModel @Inject constructor(
                 modelPath = path,
                 params = _uiState.value.inferenceParams,
                 gpuAccelerationEnabled = gpuAccelerationEnabled,
-                gpuOffloadLayers = resolveDesiredGpuLayers(),
+                gpuOffloadLayers = resolveDesiredGpuLayers(textRuntimeModel),
             )
             loadDurationMs = ((System.nanoTime() - loadStartedAtNs) / 1_000_000L).coerceAtLeast(0L)
 
@@ -1010,7 +1035,42 @@ class ChatViewModel @Inject constructor(
         }
     }
 
-    private fun resolveDesiredGpuLayers(): Int = if (gpuAccelerationEnabled) 99 else 0
+    private fun resolveDesiredGpuLayers(model: LlmModel? = _uiState.value.selectedModelInfo): Int {
+        if (!gpuAccelerationEnabled) return 0
+
+        val modelSizeBytes = model?.sizeBytes ?: 0L
+        if (modelSizeBytes <= 0L) return 28
+
+        val gib = 1024L * 1024L * 1024L
+        return when {
+            modelSizeBytes <= 2L * gib -> 48
+            modelSizeBytes <= 4L * gib -> 36
+            modelSizeBytes <= 8L * gib -> 24
+            else -> 16
+        }
+    }
+
+    private fun sanitizeGeneratedText(raw: String): String {
+        return raw
+            .replace("<|im_start|>", "")
+            .replace("<|im_end|>", "")
+            .replace("</s>", "")
+            .replace("<s>", "")
+            .replace("[EOG]", "")
+            .replace("[STOP]", "")
+            .replace("[ERROR]", "")
+            .replace("\u0000", "")
+            .trim()
+    }
+
+    private fun appendPartialMarker(text: String): String {
+        val normalized = text.trimEnd()
+        return if (normalized.endsWith("...") || normalized.endsWith("…")) {
+            normalized
+        } else {
+            "$normalized ..."
+        }
+    }
 
     private suspend fun replayConversationContext(
         conversationId: String,
