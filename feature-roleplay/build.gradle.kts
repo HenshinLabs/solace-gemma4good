@@ -32,6 +32,7 @@ dependencies {
     implementation(project(":core-domain"))
     implementation(project(":core-data"))
     implementation(project(":runtime-gguf"))
+    implementation(project(":runtime-imagegen"))
     implementation(project(":runtime-safetensors"))
     implementation(project(":core-ui"))
 

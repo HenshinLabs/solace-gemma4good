@@ -52,7 +52,7 @@ enum class TopLevelDestination(
     val label: String,
 ) {
     HOME(Routes.HOME, Icons.Default.Home, "Home"),
-    CHAT(Routes.CHAT, Icons.Default.Home, "Chat"),
+    CHAT(Routes.CHAT, Icons.Default.Person, "Chat"),
     MARKETPLACE(Routes.MARKETPLACE, Icons.Default.Search, "Explore"),
     SETTINGS(Routes.SETTINGS, Icons.Default.Settings, "Settings"),
 }

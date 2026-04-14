@@ -9,6 +9,7 @@ import com.masterllm.core.domain.repository.ConversationRepository
 import com.masterllm.core.domain.repository.ModelRepository
 import com.masterllm.core.domain.repository.SettingsRepository
 import com.masterllm.runtime.gguf.GgufEngine
+import com.masterllm.runtime.gguf.PerformanceUsageSampler
 import com.masterllm.runtime.imagegen.ImageGenEngine
 import com.masterllm.runtime.imagegen.ImageGenProgress
 import com.masterllm.runtime.safetensors.SafetensorsEngine
@@ -47,6 +48,10 @@ data class GenerationStats(
     val nativePromptTokensPerSecond: Float,
     val decodeTokensPerSecond: Double,
     val nativeTokensPerSecond: Float,
+    val promptCpuUsagePercent: Double,
+    val decodeCpuUsagePercent: Double,
+    val promptGpuUsagePercent: Double?,
+    val decodeGpuUsagePercent: Double?,
     val threadCount: Int,
     val gpuLayers: Int,
     val contextSize: Int,
@@ -602,8 +607,10 @@ class ChatViewModel @Inject constructor(
 
                 val builder = StringBuilder()
                 val promptTokens = ggufEngine.getContextLengthUsed()
+                val generationStartSnapshot = PerformanceUsageSampler.captureSnapshot()
                 val startedAtNs = System.nanoTime()
                 var firstTokenAtNs: Long? = null
+                var firstTokenSnapshot: PerformanceUsageSampler.Snapshot? = null
                 var streamError: Throwable? = null
 
                 try {
@@ -611,6 +618,7 @@ class ChatViewModel @Inject constructor(
                         if (!_uiState.value.isGenerating) throw CancellationException("Generation stopped")
                         if (firstTokenAtNs == null) {
                             firstTokenAtNs = System.nanoTime()
+                            firstTokenSnapshot = PerformanceUsageSampler.captureSnapshot()
                             _uiState.update { state -> state.copy(generationStatus = "Generating response...") }
                         }
                         builder.append(piece)
@@ -631,6 +639,7 @@ class ChatViewModel @Inject constructor(
                     finalText = appendPartialMarker(finalText)
                 }
                 val completedAtNs = System.nanoTime()
+                val generationEndSnapshot = PerformanceUsageSampler.captureSnapshot()
 
                 if (streamError != null && finalText.isEmpty()) {
                     throw streamError as Throwable
@@ -667,6 +676,13 @@ class ChatViewModel @Inject constructor(
                 val nativePromptSpeed = ggufEngine.getPromptProcessingSpeed()
                 val activeThreads = ggufEngine.getConfiguredThreadCount().coerceAtLeast(1)
                 val activeGpuLayers = ggufEngine.getConfiguredGpuLayers().coerceAtLeast(0)
+                val promptUsage = PerformanceUsageSampler.computeUsage(
+                    start = generationStartSnapshot,
+                    end = firstTokenSnapshot ?: generationEndSnapshot,
+                )
+                val decodeUsage = firstTokenSnapshot?.let {
+                    PerformanceUsageSampler.computeUsage(start = it, end = generationEndSnapshot)
+                }
 
                 _uiState.update { state ->
                     state.copy(
@@ -684,6 +700,10 @@ class ChatViewModel @Inject constructor(
                             nativePromptTokensPerSecond = nativePromptSpeed,
                             decodeTokensPerSecond = decodeTokensPerSecond,
                             nativeTokensPerSecond = nativeSpeed,
+                            promptCpuUsagePercent = promptUsage.cpuPercent,
+                            decodeCpuUsagePercent = decodeUsage?.cpuPercent ?: 0.0,
+                            promptGpuUsagePercent = promptUsage.gpuPercent,
+                            decodeGpuUsagePercent = decodeUsage?.gpuPercent,
                             threadCount = activeThreads,
                             gpuLayers = activeGpuLayers,
                             contextSize = state.inferenceParams.contextSize ?: 2048,

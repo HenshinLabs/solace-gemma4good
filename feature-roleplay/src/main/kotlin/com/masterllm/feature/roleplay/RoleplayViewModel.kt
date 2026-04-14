@@ -1,5 +1,7 @@
 package com.masterllm.feature.roleplay
 
+import android.content.Context
+import android.graphics.Bitmap
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.masterllm.core.domain.model.Conversation
@@ -18,11 +20,17 @@ import com.masterllm.core.domain.repository.ModelRepository
 import com.masterllm.core.domain.repository.RoleplayRepository
 import com.masterllm.core.domain.repository.SettingsRepository
 import com.masterllm.runtime.gguf.GgufEngine
+import com.masterllm.runtime.gguf.PerformanceUsageSampler
+import com.masterllm.runtime.imagegen.ImageGenEngine
+import com.masterllm.runtime.imagegen.ImageGenProgress
 import com.masterllm.runtime.safetensors.SafetensorsEngine
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
+import java.io.File
 import java.util.UUID
 import javax.inject.Inject
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -34,6 +42,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 
 data class RoleplayGenerationStats(
     val modelDisplayName: String,
@@ -49,10 +58,28 @@ data class RoleplayGenerationStats(
     val nativePromptTokensPerSecond: Float,
     val decodeTokensPerSecond: Double,
     val nativeTokensPerSecond: Float,
+    val promptCpuUsagePercent: Double,
+    val decodeCpuUsagePercent: Double,
+    val promptGpuUsagePercent: Double?,
+    val decodeGpuUsagePercent: Double?,
     val threadCount: Int,
     val gpuLayers: Int,
     val contextSize: Int,
     val generatedAtEpochMs: Long = System.currentTimeMillis(),
+)
+
+data class RoleplayModelRuntimeInfo(
+    val modelId: String? = null,
+    val modelDisplayName: String = "No model selected",
+    val backend: String = "Not loaded",
+    val statusLabel: String = "Idle",
+    val threadCount: Int = 4,
+    val gpuLayers: Int = 0,
+    val contextSize: Int = 2048,
+    val gpuAccelerationEnabled: Boolean = false,
+    val loadDurationMs: Long? = null,
+    val note: String = "Select a model to start roleplay inference.",
+    val lastError: String? = null,
 )
 
 data class RoleplayUiState(
@@ -67,6 +94,7 @@ data class RoleplayUiState(
     val generationStatus: String? = null,
     val showSessionList: Boolean = true,
     val showSetupDialog: Boolean = false,
+    val showModelConfig: Boolean = false,
     val setupTitle: String = "",
     val setupGenre: String = "Fantasy",
     val setupPremise: String = "",
@@ -75,6 +103,8 @@ data class RoleplayUiState(
     val setupUserName: String = "",
     val setupUserDescription: String = "",
     val setupVisualStyle: VisualStyle = VisualStyle.FANTASY_ART,
+    val selectedModelInfo: LlmModel? = null,
+    val modelRuntime: RoleplayModelRuntimeInfo = RoleplayModelRuntimeInfo(),
     val error: String? = null,
     val inferenceParams: InferenceParams = InferenceParams(),
     val lastGenerationStats: RoleplayGenerationStats? = null,
@@ -91,6 +121,10 @@ sealed interface RoleplayAction {
     data object BackToList : RoleplayAction
     data object ShowSetup : RoleplayAction
     data object DismissSetup : RoleplayAction
+    data object ShowModelConfig : RoleplayAction
+    data object HideModelConfig : RoleplayAction
+    data object RefreshModelRuntime : RoleplayAction
+    data object GenerateSceneImage : RoleplayAction
     data class SetupTitleChanged(val v: String) : RoleplayAction
     data class SetupGenreChanged(val v: String) : RoleplayAction
     data class SetupPremiseChanged(val v: String) : RoleplayAction
@@ -117,7 +151,9 @@ class RoleplayViewModel @Inject constructor(
     private val modelRepository: ModelRepository,
     private val settingsRepository: SettingsRepository,
     private val ggufEngine: GgufEngine,
+    private val imageGenEngine: ImageGenEngine,
     private val safetensorsEngine: SafetensorsEngine,
+    @ApplicationContext private val appContext: Context,
 ) : ViewModel() {
 
     private data class EngineReadyResult(
@@ -132,6 +168,7 @@ class RoleplayViewModel @Inject constructor(
     private var messagesJob: Job? = null
     private var generationJob: Job? = null
     private var loadedModelId: String? = null
+    private var loadedImageModelId: String? = null
     private var gpuAccelerationEnabled: Boolean = false
     private val engineMutex = Mutex()
 
@@ -146,17 +183,31 @@ class RoleplayViewModel @Inject constructor(
             modelRepository.getDownloadedModels().collect { models ->
                 val filtered = models.filter { model ->
                     model.downloadState == DownloadState.DOWNLOADED &&
-                        (model.format == ModelFormat.GGUF || model.format == ModelFormat.SAFETENSORS)
+                        (
+                            model.format == ModelFormat.GGUF ||
+                                model.format == ModelFormat.SAFETENSORS ||
+                                model.format == ModelFormat.DIFFUSERS
+                            )
                 }
 
                 _uiState.update { state ->
                     val selected = state.selectedModelId?.takeIf { selectedId ->
                         filtered.any { it.id == selectedId }
-                    } ?: filtered.firstOrNull()?.id
+                    } ?: filtered.firstOrNull { it.format == ModelFormat.GGUF }?.id
+                        ?: filtered.firstOrNull { it.format == ModelFormat.SAFETENSORS }?.id
+                        ?: filtered.firstOrNull { it.format == ModelFormat.DIFFUSERS }?.id
+                    val selectedModel = filtered.firstOrNull { it.id == selected }
 
                     state.copy(
                         availableModels = filtered,
                         selectedModelId = selected,
+                        selectedModelInfo = selectedModel,
+                        modelRuntime = state.modelRuntime.copy(
+                            modelId = selectedModel?.id,
+                            modelDisplayName = selectedModel?.displayName?.ifBlank { selectedModel.repoId }
+                                ?: "No model selected",
+                            backend = runtimeBackendLabelForModel(selectedModel?.format),
+                        ),
                     )
                 }
             }
@@ -176,6 +227,7 @@ class RoleplayViewModel @Inject constructor(
                             ),
                         )
                     }
+                    refreshModelRuntime()
                 }
         }
     }
@@ -194,6 +246,10 @@ class RoleplayViewModel @Inject constructor(
             }
             RoleplayAction.ShowSetup -> _uiState.update { it.copy(showSetupDialog = true) }
             RoleplayAction.DismissSetup -> _uiState.update { it.copy(showSetupDialog = false) }
+            RoleplayAction.ShowModelConfig -> showModelConfig()
+            RoleplayAction.HideModelConfig -> _uiState.update { it.copy(showModelConfig = false) }
+            RoleplayAction.RefreshModelRuntime -> refreshModelRuntime()
+            RoleplayAction.GenerateSceneImage -> generateSceneImage()
             is RoleplayAction.SetupTitleChanged -> _uiState.update { it.copy(setupTitle = action.v) }
             is RoleplayAction.SetupGenreChanged -> _uiState.update { it.copy(setupGenre = action.v) }
             is RoleplayAction.SetupPremiseChanged -> _uiState.update { it.copy(setupPremise = action.v) }
@@ -220,13 +276,201 @@ class RoleplayViewModel @Inject constructor(
         }
     }
 
+    private fun showModelConfig() {
+        viewModelScope.launch {
+            val model = _uiState.value.selectedModelId
+                ?.let { modelRepository.getModelById(it) }
+                ?: _uiState.value.availableModels.firstOrNull { it.id == _uiState.value.selectedModelId }
+            _uiState.update {
+                it.copy(
+                    showModelConfig = true,
+                    selectedModelInfo = model,
+                )
+            }
+            refreshModelRuntime()
+        }
+    }
+
+    private fun refreshModelRuntime() {
+        val state = _uiState.value
+        val selectedModel = state.selectedModelInfo
+            ?: state.availableModels.firstOrNull { it.id == state.selectedModelId }
+
+        val ggufLoaded = selectedModel?.format == ModelFormat.GGUF &&
+            selectedModel.id == loadedModelId &&
+            ggufEngine.isModelLoaded()
+        val imageLoaded = selectedModel?.format == ModelFormat.DIFFUSERS &&
+            selectedModel.id == loadedImageModelId &&
+            imageGenEngine.isAvailable()
+
+        val activeThreads = if (ggufLoaded) {
+            ggufEngine.getConfiguredThreadCount().coerceAtLeast(1)
+        } else {
+            state.inferenceParams.numThreads.coerceAtLeast(1)
+        }
+        val activeGpuLayers = if (ggufLoaded) {
+            ggufEngine.getConfiguredGpuLayers().coerceAtLeast(0)
+        } else {
+            resolveDesiredGpuLayers(selectedModel)
+        }
+
+        val statusLabel = when {
+            ggufLoaded || imageLoaded -> "Loaded"
+            selectedModel != null -> "Idle"
+            else -> "Idle"
+        }
+
+        val note = when {
+            selectedModel == null -> "Download a model from Marketplace to start roleplay."
+            selectedModel.format == ModelFormat.DIFFUSERS -> "Diffusers model selected for scene image generation."
+            ggufLoaded -> "Text runtime loaded and ready."
+            else -> "Model selected. Send a prompt to load runtime."
+        }
+
+        _uiState.update {
+            it.copy(
+                modelRuntime = it.modelRuntime.copy(
+                    modelId = selectedModel?.id,
+                    modelDisplayName = selectedModel?.displayName?.ifBlank { selectedModel.repoId }
+                        ?: "No model selected",
+                    backend = runtimeBackendLabelForModel(selectedModel?.format),
+                    statusLabel = statusLabel,
+                    threadCount = activeThreads,
+                    gpuLayers = activeGpuLayers,
+                    contextSize = it.inferenceParams.contextSize ?: 2048,
+                    gpuAccelerationEnabled = gpuAccelerationEnabled,
+                    note = note,
+                    lastError = null,
+                ),
+            )
+        }
+    }
+
+    private fun generateSceneImage() {
+        val session = _uiState.value.currentSession
+        if (session == null) {
+            _uiState.update { it.copy(error = "Open a roleplay session before generating images.") }
+            return
+        }
+
+        val prompt = _uiState.value.inputText.trim().ifBlank {
+            _uiState.value.messages
+                .lastOrNull { it.role == MessageRole.USER || it.role == MessageRole.ASSISTANT }
+                ?.content
+                ?.take(180)
+                .orEmpty()
+                .ifBlank {
+                    session.premise.take(180)
+                }
+        }
+
+        if (prompt.isBlank()) {
+            _uiState.update {
+                it.copy(error = "Type a scene prompt (or add conversation context) before generating an image.")
+            }
+            return
+        }
+
+        generationJob?.cancel()
+        generationJob = viewModelScope.launch {
+            _uiState.update {
+                it.copy(
+                    isGenerating = true,
+                    generationStatus = "Preparing image model...",
+                    error = null,
+                )
+            }
+
+            try {
+                val imageModel = resolveImageModel()
+                    ?: throw IllegalStateException("Download a Diffusers model in Marketplace to generate roleplay images.")
+
+                ensureImageEngineReady(imageModel)
+
+                val styledPrompt = if (session.visualStyle == VisualStyle.CUSTOM) {
+                    prompt
+                } else {
+                    "$prompt, ${session.visualStyle.displayName}"
+                }
+
+                var generatedBitmap: Bitmap? = null
+                imageGenEngine.generate(
+                    prompt = styledPrompt,
+                    negativePrompt = "",
+                    steps = 24,
+                    cfgScale = 7.5f,
+                    width = 512,
+                    height = 512,
+                ).collect { progress ->
+                    when (progress) {
+                        is ImageGenProgress.Step -> {
+                            _uiState.update {
+                                it.copy(generationStatus = "Generating image... ${progress.current}/${progress.total}")
+                            }
+                        }
+
+                        is ImageGenProgress.Complete -> {
+                            generatedBitmap = progress.bitmap
+                        }
+                    }
+                }
+
+                val finalBitmap = generatedBitmap
+                    ?: throw IllegalStateException("Image generation finished without output")
+                val imagePath = persistGeneratedImage(finalBitmap, session.id)
+
+                conversationRepository.addMessage(
+                    Message(
+                        id = UUID.randomUUID().toString(),
+                        conversationId = session.conversationId,
+                        role = MessageRole.IMAGE_GEN,
+                        content = "Generated roleplay scene image for: $styledPrompt",
+                        attachedImagePath = imagePath,
+                    ),
+                )
+
+                _uiState.update { it.copy(inputText = "") }
+            } catch (_: CancellationException) {
+                // Explicit stop requested by user.
+            } catch (e: Exception) {
+                _uiState.update {
+                    it.copy(error = "Roleplay image generation failed: ${e.message ?: "unknown error"}")
+                }
+            } finally {
+                _uiState.update {
+                    it.copy(
+                        isGenerating = false,
+                        generationStatus = null,
+                    )
+                }
+                refreshModelRuntime()
+            }
+        }
+    }
+
     private fun selectModel(modelId: String) {
         viewModelScope.launch {
             if (_uiState.value.isGenerating) {
                 stopGeneration()
             }
 
-            _uiState.update { it.copy(selectedModelId = modelId) }
+            val selectedModel = modelRepository.getModelById(modelId)
+                ?: _uiState.value.availableModels.firstOrNull { it.id == modelId }
+
+            _uiState.update {
+                it.copy(
+                    selectedModelId = modelId,
+                    selectedModelInfo = selectedModel,
+                    modelRuntime = it.modelRuntime.copy(
+                        modelId = selectedModel?.id,
+                        modelDisplayName = selectedModel?.displayName?.ifBlank { selectedModel.repoId }
+                            ?: "No model selected",
+                        backend = runtimeBackendLabelForModel(selectedModel?.format),
+                        note = "Model updated. Send a prompt or refresh runtime.",
+                        lastError = null,
+                    ),
+                )
+            }
 
             _uiState.value.currentSession?.let { session ->
                 val conversation = conversationRepository.getConversationById(session.conversationId)
@@ -244,6 +488,12 @@ class RoleplayViewModel @Inject constructor(
                 ggufEngine.close()
                 loadedModelId = null
             }
+            if (loadedImageModelId != null && loadedImageModelId != modelId) {
+                imageGenEngine.unloadModel()
+                loadedImageModelId = null
+            }
+
+            refreshModelRuntime()
         }
     }
 
@@ -256,7 +506,7 @@ class RoleplayViewModel @Inject constructor(
 
         viewModelScope.launch {
             val selectedModelId = _uiState.value.selectedModelId
-                ?: _uiState.value.availableModels.firstOrNull()?.id
+                ?: resolveDefaultTextModelId()
                 .orEmpty()
             val conversationId = UUID.randomUUID().toString()
 
@@ -312,15 +562,19 @@ class RoleplayViewModel @Inject constructor(
         viewModelScope.launch {
             val session = roleplayRepository.getSessionById(id) ?: return@launch
             val conversation = conversationRepository.getConversationById(session.conversationId)
+            val selectedModelId = conversation?.modelId?.takeIf { modelId -> modelId.isNotBlank() }
+                ?: _uiState.value.selectedModelId
+            val selectedModel = selectedModelId?.let { modelRepository.getModelById(it) }
             _uiState.update {
                 it.copy(
                     currentSession = session,
                     showSessionList = false,
-                    selectedModelId = conversation?.modelId?.takeIf { modelId -> modelId.isNotBlank() }
-                        ?: it.selectedModelId,
+                    selectedModelId = selectedModelId,
+                    selectedModelInfo = selectedModel ?: it.selectedModelInfo,
                 )
             }
             observeMessages(session.conversationId)
+            refreshModelRuntime()
         }
     }
 
@@ -378,8 +632,10 @@ class RoleplayViewModel @Inject constructor(
 
                 val builder = StringBuilder()
                 val promptTokens = ggufEngine.getContextLengthUsed()
+                val generationStartSnapshot = PerformanceUsageSampler.captureSnapshot()
                 val startedAtNs = System.nanoTime()
                 var firstTokenAtNs: Long? = null
+                var firstTokenSnapshot: PerformanceUsageSampler.Snapshot? = null
                 var streamError: Throwable? = null
 
                 try {
@@ -387,6 +643,7 @@ class RoleplayViewModel @Inject constructor(
                         if (!_uiState.value.isGenerating) throw CancellationException("Generation stopped")
                         if (firstTokenAtNs == null) {
                             firstTokenAtNs = System.nanoTime()
+                            firstTokenSnapshot = PerformanceUsageSampler.captureSnapshot()
                             _uiState.update { state -> state.copy(generationStatus = "Generating response...") }
                         }
                         builder.append(piece)
@@ -407,6 +664,7 @@ class RoleplayViewModel @Inject constructor(
                     finalText = appendPartialMarker(finalText)
                 }
                 val completedAtNs = System.nanoTime()
+                val generationEndSnapshot = PerformanceUsageSampler.captureSnapshot()
 
                 if (streamError != null && finalText.isEmpty()) {
                     throw streamError as Throwable
@@ -443,6 +701,13 @@ class RoleplayViewModel @Inject constructor(
                 val nativeDecodeSpeed = ggufEngine.getResponseGenerationSpeed()
                 val activeThreads = ggufEngine.getConfiguredThreadCount().coerceAtLeast(1)
                 val activeGpuLayers = ggufEngine.getConfiguredGpuLayers().coerceAtLeast(0)
+                val promptUsage = PerformanceUsageSampler.computeUsage(
+                    start = generationStartSnapshot,
+                    end = firstTokenSnapshot ?: generationEndSnapshot,
+                )
+                val decodeUsage = firstTokenSnapshot?.let {
+                    PerformanceUsageSampler.computeUsage(start = it, end = generationEndSnapshot)
+                }
 
                 _uiState.update { state ->
                     state.copy(
@@ -460,6 +725,10 @@ class RoleplayViewModel @Inject constructor(
                             nativePromptTokensPerSecond = nativePromptSpeed,
                             decodeTokensPerSecond = decodeTokensPerSecond,
                             nativeTokensPerSecond = nativeDecodeSpeed,
+                            promptCpuUsagePercent = promptUsage.cpuPercent,
+                            decodeCpuUsagePercent = decodeUsage?.cpuPercent ?: 0.0,
+                            promptGpuUsagePercent = promptUsage.gpuPercent,
+                            decodeGpuUsagePercent = decodeUsage?.gpuPercent,
                             threadCount = activeThreads,
                             gpuLayers = activeGpuLayers,
                             contextSize = state.inferenceParams.contextSize ?: 2048,
@@ -487,6 +756,7 @@ class RoleplayViewModel @Inject constructor(
                         generationStatus = null,
                     )
                 }
+                refreshModelRuntime()
             }
         }
     }
@@ -556,6 +826,37 @@ class RoleplayViewModel @Inject constructor(
             loadedModelId = textRuntimeModel.id
         }
 
+        val activeThreads = if (ggufEngine.isModelLoaded()) {
+            ggufEngine.getConfiguredThreadCount().coerceAtLeast(1)
+        } else {
+            _uiState.value.inferenceParams.numThreads.coerceAtLeast(1)
+        }
+        val activeGpuLayers = if (ggufEngine.isModelLoaded()) {
+            ggufEngine.getConfiguredGpuLayers().coerceAtLeast(0)
+        } else {
+            resolveDesiredGpuLayers(textRuntimeModel)
+        }
+
+        _uiState.update {
+            it.copy(
+                selectedModelId = textRuntimeModel.id,
+                selectedModelInfo = textRuntimeModel,
+                modelRuntime = it.modelRuntime.copy(
+                    modelId = textRuntimeModel.id,
+                    modelDisplayName = textRuntimeModel.displayName.ifBlank { textRuntimeModel.repoId },
+                    backend = resolveBackendLabel(),
+                    statusLabel = "Loaded",
+                    threadCount = activeThreads,
+                    gpuLayers = activeGpuLayers,
+                    contextSize = it.inferenceParams.contextSize ?: 2048,
+                    gpuAccelerationEnabled = gpuAccelerationEnabled,
+                    loadDurationMs = if (loadDurationMs > 0L) loadDurationMs else it.modelRuntime.loadDurationMs,
+                    note = "Text runtime loaded and ready.",
+                    lastError = null,
+                ),
+            )
+        }
+
         return EngineReadyResult(
             model = textRuntimeModel,
             loadDurationMs = loadDurationMs,
@@ -605,6 +906,46 @@ class RoleplayViewModel @Inject constructor(
         } else {
             "Not loaded"
         }
+    }
+
+    private fun runtimeBackendLabelForModel(format: ModelFormat?): String {
+        return when (format) {
+            ModelFormat.GGUF -> "GGUF/${GgufEngine.getLoadedNativeLibraryName()}"
+            ModelFormat.SAFETENSORS -> "SafeTensors/validator"
+            ModelFormat.DIFFUSERS -> "Diffusers/ImageGenEngine"
+            null -> "Not loaded"
+        }
+    }
+
+    private fun resolveImageModel(): LlmModel? {
+        val selected = _uiState.value.selectedModelInfo
+        if (selected?.format == ModelFormat.DIFFUSERS) {
+            return selected
+        }
+        return _uiState.value.availableModels.firstOrNull { it.format == ModelFormat.DIFFUSERS }
+    }
+
+    private suspend fun ensureImageEngineReady(model: LlmModel) {
+        if (loadedImageModelId == model.id && imageGenEngine.isAvailable()) return
+
+        val path = model.localPath ?: "/data/models/${model.fileName}"
+        imageGenEngine.loadModel(path).getOrElse { throw it }
+        loadedImageModelId = model.id
+    }
+
+    private suspend fun persistGeneratedImage(bitmap: Bitmap, sessionId: String): String =
+        withContext(Dispatchers.IO) {
+            val outputDir = File(appContext.filesDir, "generated/roleplay/$sessionId").apply { mkdirs() }
+            val outputFile = File(outputDir, "img_${System.currentTimeMillis()}.png")
+            outputFile.outputStream().use { out ->
+                bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+            }
+            outputFile.absolutePath
+        }
+
+    private fun resolveDefaultTextModelId(): String? {
+        return _uiState.value.availableModels.firstOrNull { it.format == ModelFormat.GGUF }?.id
+            ?: _uiState.value.availableModels.firstOrNull { it.format == ModelFormat.SAFETENSORS }?.id
     }
 
     private fun resolveDesiredGpuLayers(model: LlmModel? = _uiState.value.availableModels.firstOrNull {

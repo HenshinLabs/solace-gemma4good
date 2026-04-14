@@ -17,6 +17,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -70,11 +71,63 @@ private fun ConversationListPane(
     state: ChatUiState,
     onAction: (ChatAction) -> Unit,
 ) {
+    var modelMenuExpanded by remember { mutableStateOf(false) }
+    val selectedModel = remember(state.selectedModelId, state.availableModels) {
+        state.availableModels.firstOrNull { it.id == state.selectedModelId }
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Chats") },
+                title = {
+                    Column {
+                        Text("Chats")
+                        Text(
+                            text = selectedModel?.displayName?.ifBlank { selectedModel.repoId }
+                                ?: "No model selected",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.65f),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                },
                 actions = {
+                    if (state.availableModels.isNotEmpty()) {
+                        IconButton(onClick = { modelMenuExpanded = true }) {
+                            Icon(Icons.Default.ModelTraining, contentDescription = "Select model")
+                        }
+                        DropdownMenu(
+                            expanded = modelMenuExpanded,
+                            onDismissRequest = { modelMenuExpanded = false },
+                        ) {
+                            state.availableModels.forEach { model ->
+                                DropdownMenuItem(
+                                    text = {
+                                        Column {
+                                            Text(model.displayName.ifBlank { model.repoId })
+                                            if (model.quantization.isNotBlank()) {
+                                                Text(
+                                                    text = model.quantization,
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                                                )
+                                            }
+                                        }
+                                    },
+                                    onClick = {
+                                        onAction(ChatAction.SelectModel(model.id))
+                                        modelMenuExpanded = false
+                                    },
+                                    trailingIcon = {
+                                        if (state.selectedModelId == model.id) {
+                                            Icon(Icons.Default.Check, contentDescription = null)
+                                        }
+                                    },
+                                )
+                            }
+                        }
+                    }
                     IconButton(onClick = { onAction(ChatAction.NewConversation) }) {
                         Icon(Icons.Default.Add, contentDescription = "New chat")
                     }
@@ -153,6 +206,7 @@ private fun ChatPane(
 ) {
     val listState = rememberLazyListState()
     var modelMenuExpanded by remember { mutableStateOf(false) }
+    var selectedTab by rememberSaveable { mutableIntStateOf(0) }
     val selectedModel = remember(state.selectedModelId, state.availableModels) {
         state.availableModels.firstOrNull { it.id == state.selectedModelId }
     }
@@ -276,82 +330,125 @@ private fun ChatPane(
             )
         },
     ) { padding ->
-        LazyColumn(
-            state = listState,
+        Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding),
-            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            item(key = "runtime_status") {
-                ModelRuntimeCard(
-                    runtime = state.modelRuntime,
-                    onRefresh = { onAction(ChatAction.RefreshModelRuntime) },
+            TabRow(selectedTabIndex = selectedTab) {
+                Tab(
+                    selected = selectedTab == 0,
+                    onClick = { selectedTab = 0 },
+                    text = { Text("Chat") },
+                    icon = { Icon(Icons.Default.Chat, contentDescription = null) },
+                )
+                Tab(
+                    selected = selectedTab == 1,
+                    onClick = { selectedTab = 1 },
+                    text = { Text("Analytics") },
+                    icon = { Icon(Icons.Default.Analytics, contentDescription = null) },
                 )
             }
 
-            if (state.benchmarkRunning) {
-                item(key = "benchmark_running") {
-                    BenchmarkRunningCard()
-                }
-            }
+            if (selectedTab == 0) {
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    state.generationStatus?.let { status ->
+                        item(key = "generation_status") {
+                            GenerationStatusCard(status)
+                        }
+                    }
 
-            state.benchmarkResult?.let { result ->
-                item(key = "benchmark_result") {
-                    BenchmarkResultCard(
-                        result = result,
-                        onDismiss = { onAction(ChatAction.ClearBenchmarkResult) },
-                    )
-                }
-            }
+                    items(state.messages, key = { it.id }) { msg ->
+                        MessageBubble(msg)
+                    }
 
-            state.generationStatus?.let { status ->
-                item(key = "generation_status") {
-                    GenerationStatusCard(status)
-                }
-            }
+                    // Streaming response
+                    if (state.streamingText.isNotEmpty()) {
+                        item(key = "streaming") {
+                            MessageBubble(
+                                message = Message(
+                                    id = "streaming",
+                                    role = MessageRole.ASSISTANT,
+                                    content = state.streamingText,
+                                    isStreaming = true,
+                                )
+                            )
+                        }
+                    }
 
-            items(state.messages, key = { it.id }) { msg ->
-                MessageBubble(msg)
-            }
-
-            // Streaming response
-            if (state.streamingText.isNotEmpty()) {
-                item(key = "streaming") {
-                    MessageBubble(
-                        message = Message(
-                            id = "streaming",
-                            role = MessageRole.ASSISTANT,
-                            content = state.streamingText,
-                            isStreaming = true,
-                        )
-                    )
-                }
-            }
-
-            state.lastGenerationStats?.let { stats ->
-                item(key = "generation_stats_${stats.generatedAtEpochMs}") {
-                    GenerationStatsCard(stats)
-                }
-            }
-
-            // Typing indicator
-            if (state.isGenerating && state.streamingText.isEmpty()) {
-                item(key = "typing") {
-                    Row(
-                        modifier = Modifier.padding(start = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        TypingIndicator()
-                        Spacer(Modifier.width(8.dp))
-                        Text(
-                            text = "Generating…",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
-                        )
+                    // Typing indicator
+                    if (state.isGenerating && state.streamingText.isEmpty()) {
+                        item(key = "typing") {
+                            Row(
+                                modifier = Modifier.padding(start = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                TypingIndicator()
+                                Spacer(Modifier.width(8.dp))
+                                Text(
+                                    text = "Generating…",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
+                                )
+                            }
+                        }
                     }
                 }
+            } else {
+                ChatAnalyticsPane(state = state, onAction = onAction)
+            }
+        }
+    }
+}
+
+@Composable
+private fun ChatAnalyticsPane(
+    state: ChatUiState,
+    onAction: (ChatAction) -> Unit,
+) {
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        item(key = "runtime_status") {
+            ModelRuntimeCard(
+                runtime = state.modelRuntime,
+                onRefresh = { onAction(ChatAction.RefreshModelRuntime) },
+            )
+        }
+
+        if (state.benchmarkRunning) {
+            item(key = "benchmark_running") {
+                BenchmarkRunningCard()
+            }
+        }
+
+        state.benchmarkResult?.let { result ->
+            item(key = "benchmark_result") {
+                BenchmarkResultCard(
+                    result = result,
+                    onDismiss = { onAction(ChatAction.ClearBenchmarkResult) },
+                )
+            }
+        }
+
+        state.lastGenerationStats?.let { stats ->
+            item(key = "generation_stats_${stats.generatedAtEpochMs}") {
+                GenerationStatsCard(stats)
+            }
+        } ?: item(key = "no_generation_stats") {
+            ElevatedCard(modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    text = "Run a prompt to populate prompt/decode CPU and GPU analytics.",
+                    modifier = Modifier.padding(12.dp),
+                    style = MaterialTheme.typography.bodySmall,
+                )
             }
         }
     }
@@ -512,12 +609,26 @@ private fun GenerationStatsCard(stats: GenerationStats) {
                 fontWeight = FontWeight.Medium,
             )
             Text(
+                text = "Prompt CPU: ${formatPercent(stats.promptCpuUsagePercent)} | Prompt GPU: ${formatPercent(stats.promptGpuUsagePercent)}",
+                style = MaterialTheme.typography.bodySmall,
+                fontWeight = FontWeight.Medium,
+            )
+            Text(
                 text = "Decode speed: ${"%.2f".format(stats.decodeTokensPerSecond)} tok/s | Native decode: ${"%.2f".format(stats.nativeTokensPerSecond)} tok/s",
+                style = MaterialTheme.typography.bodySmall,
+                fontWeight = FontWeight.Medium,
+            )
+            Text(
+                text = "Decode CPU: ${formatPercent(stats.decodeCpuUsagePercent)} | Decode GPU: ${formatPercent(stats.decodeGpuUsagePercent)}",
                 style = MaterialTheme.typography.bodySmall,
                 fontWeight = FontWeight.Medium,
             )
         }
     }
+}
+
+private fun formatPercent(value: Double?): String {
+    return value?.let { "${"%.1f".format(it)}%" } ?: "N/A"
 }
 
 @Composable
