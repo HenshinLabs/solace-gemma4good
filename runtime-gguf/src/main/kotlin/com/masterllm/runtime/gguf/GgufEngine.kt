@@ -10,6 +10,8 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileNotFoundException
@@ -113,6 +115,7 @@ class GgufEngine @Inject constructor(
     
     private var nativePtr = 0L
     private var isLoaded = false
+    private val nativeOpsMutex = Mutex()
     
     /**
      * Loads a GGUF model from the given path.
@@ -127,38 +130,49 @@ class GgufEngine @Inject constructor(
         gpuAccelerationEnabled: Boolean = false,
         gpuOffloadLayers: Int? = null,
     ) = withContext(Dispatchers.IO) {
-        val ggufReader = GGUFReader()
-        ggufReader.load(modelPath)
+        nativeOpsMutex.withLock {
+            val ggufReader = GGUFReader()
+            ggufReader.load(modelPath)
 
-        val modelContextSize = ggufReader.getContextSize() ?: DEFAULT_CONTEXT_SIZE
-        val modelChatTemplate = ggufReader.getChatTemplate() ?: DEFAULT_CHAT_TEMPLATE
-        val actualContextSize = params.contextSize?.toLong()?.coerceAtLeast(512L) ?: modelContextSize
-        val actualChatTemplate = params.chatTemplate?.takeIf { it.isNotBlank() } ?: modelChatTemplate
-        val resolvedGpuLayers = if (gpuAccelerationEnabled) {
-            (gpuOffloadLayers ?: 99).coerceAtLeast(0)
-        } else {
-            0
-        }
-        
-        nativePtr = loadModel(
-            modelPath,
-            params.minP,
-            params.temperature,
-            params.storeChats,
-            actualContextSize,
-            actualChatTemplate,
-            params.numThreads.coerceAtLeast(1),
-            resolvedGpuLayers,
-            params.useMmap,
-            params.useMlock,
-        )
-        
-        isLoaded = nativePtr != 0L
-        
-        if (isLoaded) {
-            Log.i("GgufEngine", "Model loaded successfully: $modelPath")
-        } else {
-            throw IllegalStateException("Failed to load model")
+            val modelContextSize = ggufReader.getContextSize() ?: DEFAULT_CONTEXT_SIZE
+            val modelChatTemplate = ggufReader.getChatTemplate() ?: DEFAULT_CHAT_TEMPLATE
+            val actualContextSize = params.contextSize?.toLong()?.coerceAtLeast(512L) ?: modelContextSize
+            val actualChatTemplate = params.chatTemplate?.takeIf { it.isNotBlank() } ?: modelChatTemplate
+            val resolvedGpuLayers = if (gpuAccelerationEnabled) {
+                (gpuOffloadLayers ?: 99).coerceAtLeast(0)
+            } else {
+                0
+            }
+
+            if (nativePtr != 0L) {
+                close(nativePtr)
+                nativePtr = 0L
+                isLoaded = false
+            }
+
+            nativePtr = loadModel(
+                modelPath,
+                params.minP,
+                params.temperature,
+                params.topP,
+                params.topK,
+                params.repeatPenalty,
+                params.storeChats,
+                actualContextSize,
+                actualChatTemplate,
+                params.numThreads.coerceAtLeast(1),
+                resolvedGpuLayers,
+                params.useMmap,
+                params.useMlock,
+            )
+
+            isLoaded = nativePtr != 0L
+
+            if (isLoaded) {
+                Log.i("GgufEngine", "Model loaded successfully: $modelPath")
+            } else {
+                throw IllegalStateException("Failed to load model")
+            }
         }
     }
     
@@ -234,20 +248,30 @@ class GgufEngine @Inject constructor(
      * @param query The user's query/prompt
      * @return Flow of response pieces
      */
-    fun getResponseAsFlow(query: String): Flow<String> = flow {
-        verifyHandle()
-        startCompletion(nativePtr, query)
+    fun getResponseAsFlow(
+        query: String,
+        maxTokens: Int = Int.MAX_VALUE,
+    ): Flow<String> = flow {
+        val budget = maxTokens.coerceAtLeast(1)
+        nativeOpsMutex.withLock {
+            val handle = verifyHandle()
+            startCompletion(handle, query)
 
-        try {
-            while (currentCoroutineContext().isActive) {
-                val piece = completionLoop(nativePtr)
-                when (piece) {
-                    "[EOG]", "[STOP]", "[ERROR]" -> break
-                    else -> if (piece.isNotEmpty()) emit(piece)
+            var emittedTokens = 0
+            try {
+                while (currentCoroutineContext().isActive && emittedTokens < budget) {
+                    val piece = completionLoop(handle)
+                    when (piece) {
+                        "[EOG]", "[STOP]", "[ERROR]" -> break
+                        else -> if (piece.isNotEmpty()) {
+                            emit(piece)
+                            emittedTokens += 1
+                        }
+                    }
                 }
+            } finally {
+                stopCompletion(handle)
             }
-        } finally {
-            stopCompletion(nativePtr)
         }
     }.flowOn(Dispatchers.Default)
     
@@ -258,24 +282,37 @@ class GgufEngine @Inject constructor(
      * @param query The user's query/prompt
      * @return The complete response from the model
      */
-    fun getResponse(query: String): String {
-        verifyHandle()
-        startCompletion(nativePtr, query)
+    suspend fun getResponse(
+        query: String,
+        maxTokens: Int = Int.MAX_VALUE,
+    ): String {
+        val budget = maxTokens.coerceAtLeast(1)
+        return nativeOpsMutex.withLock {
+            val handle = verifyHandle()
+            startCompletion(handle, query)
 
-        val response = StringBuilder()
+            val response = StringBuilder()
+            var emittedTokens = 0
 
-        try {
-            var piece = completionLoop(nativePtr)
+            try {
+                var piece = completionLoop(handle)
 
-            while (piece != "[EOG]" && piece != "[STOP]" && piece != "[ERROR]") {
-                response.append(piece)
-                piece = completionLoop(nativePtr)
+                while (
+                    emittedTokens < budget &&
+                        piece != "[EOG]" &&
+                        piece != "[STOP]" &&
+                        piece != "[ERROR]"
+                ) {
+                    response.append(piece)
+                    emittedTokens += 1
+                    piece = completionLoop(handle)
+                }
+            } finally {
+                stopCompletion(handle)
             }
-        } finally {
-            stopCompletion(nativePtr)
-        }
 
-        return response.toString()
+            response.toString()
+        }
     }
     
     /**
@@ -295,11 +332,13 @@ class GgufEngine @Inject constructor(
     /**
      * Unloads the model and releases resources.
      */
-    fun close() {
-        if (nativePtr != 0L) {
-            close(nativePtr)
-            nativePtr = 0L
-            isLoaded = false
+    suspend fun close() {
+        nativeOpsMutex.withLock {
+            if (nativePtr != 0L) {
+                close(nativePtr)
+                nativePtr = 0L
+                isLoaded = false
+            }
         }
     }
     
@@ -308,8 +347,10 @@ class GgufEngine @Inject constructor(
      */
     fun isModelLoaded(): Boolean = isLoaded && nativePtr != 0L
     
-    private fun verifyHandle() {
-        check(nativePtr != 0L) { "Model is not loaded. Call load() first." }
+    private fun verifyHandle(): Long {
+        val handle = nativePtr
+        check(handle != 0L) { "Model is not loaded. Call load() first." }
+        return handle
     }
     
     // Native methods
@@ -317,6 +358,9 @@ class GgufEngine @Inject constructor(
         modelPath: String,
         minP: Float,
         temperature: Float,
+        topP: Float,
+        topK: Int,
+        repeatPenalty: Float,
         storeChats: Boolean,
         contextSize: Long,
         chatTemplate: String,

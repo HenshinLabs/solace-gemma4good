@@ -7,18 +7,51 @@ data class TextRuntimeResolution(
 
 object TextRuntimeModelResolver {
 
+    private fun normalizedQuant(quantization: String): String {
+        return quantization.lowercase().replace('-', '_').trim()
+    }
+
+    private fun speedScoreForQuant(quantization: String): Int {
+        val quant = normalizedQuant(quantization)
+        return when {
+            quant.contains("q4_k_m") -> 100
+            quant.contains("q4_k_s") -> 95
+            quant.contains("q4_0") -> 90
+            quant.contains("q5_k_m") -> 82
+            quant.contains("q5_0") -> 78
+            quant.contains("q6_k") -> 68
+            quant.contains("q8_0") -> 52
+            quant.isNotBlank() -> 40
+            else -> 20
+        }
+    }
+
     fun findSameRepoGgufFallback(
         selectedModel: LlmModel,
         availableModels: List<LlmModel>,
     ): LlmModel? {
         if (selectedModel.format != ModelFormat.SAFETENSORS) return null
 
-        return availableModels.firstOrNull { model ->
-            model.downloadState == DownloadState.DOWNLOADED &&
-                model.format == ModelFormat.GGUF &&
-                model.repoId.isNotBlank() &&
-                model.repoId == selectedModel.repoId
-        }
+        val selectedQuant = normalizedQuant(selectedModel.quantization)
+
+        return availableModels
+            .asSequence()
+            .filter { model ->
+                model.downloadState == DownloadState.DOWNLOADED &&
+                    model.format == ModelFormat.GGUF &&
+                    model.repoId.isNotBlank() &&
+                    model.repoId == selectedModel.repoId
+            }
+            .sortedWith(
+                compareByDescending<LlmModel> { model ->
+                    val quantMatchBonus =
+                        if (selectedQuant.isNotBlank() && normalizedQuant(model.quantization) == selectedQuant) 200 else 0
+                    speedScoreForQuant(model.quantization) + quantMatchBonus
+                }
+                    .thenBy { model -> model.sizeBytes }
+                    .thenBy { model -> model.displayName.lowercase() }
+            )
+            .firstOrNull()
     }
 
     fun resolveForTextGeneration(

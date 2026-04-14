@@ -9,6 +9,7 @@ import com.masterllm.core.domain.repository.ConversationRepository
 import com.masterllm.core.domain.repository.ModelRepository
 import com.masterllm.core.domain.repository.SettingsRepository
 import com.masterllm.runtime.gguf.GgufEngine
+import com.masterllm.runtime.gguf.GgufRuntimeCoordinator
 import com.masterllm.runtime.gguf.PerformanceUsageSampler
 import com.masterllm.runtime.imagegen.ImageGenEngine
 import com.masterllm.runtime.imagegen.ImageGenProgress
@@ -18,6 +19,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -134,6 +136,7 @@ class ChatViewModel @Inject constructor(
     private val modelRepository: ModelRepository,
     private val settingsRepository: SettingsRepository,
     private val ggufEngine: GgufEngine,
+    private val runtimeCoordinator: GgufRuntimeCoordinator,
     private val imageGenEngine: ImageGenEngine,
     private val safetensorsEngine: SafetensorsEngine,
     @ApplicationContext private val appContext: Context,
@@ -153,9 +156,10 @@ class ChatViewModel @Inject constructor(
     private var benchmarkJob: Job? = null
     private var modelProbeJob: Job? = null
     private var loadedModelId: String? = null
+    private var loadedInferenceSignature: InferenceParams? = null
     private var loadedImageModelId: String? = null
     private var gpuAccelerationEnabled: Boolean = false
-    private val engineMutex = Mutex()
+    private val engineMutex = runtimeCoordinator.engineMutex
 
     init {
         // Watch chat conversations
@@ -260,7 +264,7 @@ class ChatViewModel @Inject constructor(
     private fun selectModel(modelId: String) {
         viewModelScope.launch {
             if (_uiState.value.isGenerating) {
-                stopGeneration()
+                cancelGenerationIfRunning()
             }
 
             val model = modelRepository.getModelById(modelId)
@@ -285,8 +289,11 @@ class ChatViewModel @Inject constructor(
 
             // Close current model so next generation loads the new one
             if (loadedModelId != null && loadedModelId != modelId) {
-                ggufEngine.close()
-                loadedModelId = null
+                engineMutex.withLock {
+                    ggufEngine.close()
+                    loadedModelId = null
+                    loadedInferenceSignature = null
+                }
             }
             if (loadedImageModelId != null && loadedImageModelId != modelId) {
                 imageGenEngine.unloadModel()
@@ -444,8 +451,24 @@ class ChatViewModel @Inject constructor(
     }
 
     private fun updateInferenceParams(update: (InferenceParams) -> InferenceParams) {
+        var paramsChanged = false
         _uiState.update { state ->
-            state.copy(inferenceParams = update(state.inferenceParams))
+            val newParams = update(state.inferenceParams)
+            paramsChanged = newParams != state.inferenceParams
+            state.copy(
+                inferenceParams = newParams,
+                modelRuntime = if (paramsChanged && state.modelRuntime.status == ModelLoadStatus.LOADED) {
+                    state.modelRuntime.copy(
+                        status = ModelLoadStatus.IDLE,
+                        note = "Inference settings changed. Runtime will reload on next generation.",
+                    )
+                } else {
+                    state.modelRuntime
+                },
+            )
+        }
+        if (paramsChanged) {
+            loadedInferenceSignature = null
         }
     }
 
@@ -494,7 +517,11 @@ class ChatViewModel @Inject constructor(
             try {
                 val benchmarkResult = withContext(Dispatchers.Default) {
                     engineMutex.withLock {
-                        if (!ggufEngine.isModelLoaded() || loadedModelId != selectedModel.id) {
+                        if (
+                            !ggufEngine.isModelLoaded() ||
+                                loadedModelId != selectedModel.id ||
+                                loadedInferenceSignature != _uiState.value.inferenceParams
+                        ) {
                             val modelPath = selectedModel.localPath ?: "/data/models/${selectedModel.fileName}"
                             ggufEngine.load(
                                 modelPath = modelPath,
@@ -503,6 +530,7 @@ class ChatViewModel @Inject constructor(
                                 gpuOffloadLayers = resolveDesiredGpuLayers(selectedModel),
                             )
                             loadedModelId = selectedModel.id
+                            loadedInferenceSignature = _uiState.value.inferenceParams
                         }
 
                         ggufEngine.benchModel(pp = 512, tg = 128, pl = 0, nr = 1).trim()
@@ -606,7 +634,9 @@ class ChatViewModel @Inject constructor(
                 _uiState.update { it.copy(generationStatus = "Processing prompt...") }
 
                 val builder = StringBuilder()
-                val promptTokens = ggufEngine.getContextLengthUsed()
+                val promptTokens = engineMutex.withLock {
+                    ggufEngine.getContextLengthUsed()
+                }
                 val generationStartSnapshot = PerformanceUsageSampler.captureSnapshot()
                 val startedAtNs = System.nanoTime()
                 var firstTokenAtNs: Long? = null
@@ -614,15 +644,20 @@ class ChatViewModel @Inject constructor(
                 var streamError: Throwable? = null
 
                 try {
-                    ggufEngine.getResponseAsFlow(text).collect { piece ->
-                        if (!_uiState.value.isGenerating) throw CancellationException("Generation stopped")
-                        if (firstTokenAtNs == null) {
-                            firstTokenAtNs = System.nanoTime()
-                            firstTokenSnapshot = PerformanceUsageSampler.captureSnapshot()
-                            _uiState.update { state -> state.copy(generationStatus = "Generating response...") }
+                    engineMutex.withLock {
+                        ggufEngine.getResponseAsFlow(
+                            text,
+                            maxTokens = _uiState.value.inferenceParams.maxTokens,
+                        ).collect { piece ->
+                            if (!_uiState.value.isGenerating) throw CancellationException("Generation stopped")
+                            if (firstTokenAtNs == null) {
+                                firstTokenAtNs = System.nanoTime()
+                                firstTokenSnapshot = PerformanceUsageSampler.captureSnapshot()
+                                _uiState.update { state -> state.copy(generationStatus = "Generating response...") }
+                            }
+                            builder.append(piece)
+                            _uiState.update { state -> state.copy(streamingText = builder.toString()) }
                         }
-                        builder.append(piece)
-                        _uiState.update { state -> state.copy(streamingText = builder.toString()) }
                     }
                 } catch (cancelled: CancellationException) {
                     throw cancelled
@@ -661,7 +696,18 @@ class ChatViewModel @Inject constructor(
                 val decodeElapsedMs = firstTokenAtNs
                     ?.let { ((completedAtNs - it) / 1_000_000L).coerceAtLeast(1L) }
                     ?: totalElapsedMs
-                val generatedTokens = (ggufEngine.getContextLengthUsed() - promptTokens).coerceAtLeast(0)
+                var generatedTokens = 0
+                var nativeSpeed = 0f
+                var nativePromptSpeed = 0f
+                var activeThreads = _uiState.value.inferenceParams.numThreads
+                var activeGpuLayers = resolveDesiredGpuLayers()
+                engineMutex.withLock {
+                    generatedTokens = (ggufEngine.getContextLengthUsed() - promptTokens).coerceAtLeast(0)
+                    nativeSpeed = ggufEngine.getResponseGenerationSpeed()
+                    nativePromptSpeed = ggufEngine.getPromptProcessingSpeed()
+                    activeThreads = ggufEngine.getConfiguredThreadCount().coerceAtLeast(1)
+                    activeGpuLayers = ggufEngine.getConfiguredGpuLayers().coerceAtLeast(0)
+                }
                 val promptTokensPerSecond = if (firstTokenLatencyMs > 0) {
                     promptTokens.toDouble() / (firstTokenLatencyMs / 1000.0)
                 } else {
@@ -672,10 +718,6 @@ class ChatViewModel @Inject constructor(
                 } else {
                     0.0
                 }
-                val nativeSpeed = ggufEngine.getResponseGenerationSpeed()
-                val nativePromptSpeed = ggufEngine.getPromptProcessingSpeed()
-                val activeThreads = ggufEngine.getConfiguredThreadCount().coerceAtLeast(1)
-                val activeGpuLayers = ggufEngine.getConfiguredGpuLayers().coerceAtLeast(0)
                 val promptUsage = PerformanceUsageSampler.computeUsage(
                     start = generationStartSnapshot,
                     end = firstTokenSnapshot ?: generationEndSnapshot,
@@ -872,9 +914,18 @@ class ChatViewModel @Inject constructor(
     }
 
     private fun stopGeneration() {
+        viewModelScope.launch {
+            cancelGenerationIfRunning()
+        }
+    }
+
+    private suspend fun cancelGenerationIfRunning() {
+        val job = generationJob ?: return
         _uiState.update { it.copy(isGenerating = false, generationStatus = null) }
-        generationJob?.cancel()
-        generationJob = null
+        job.cancelAndJoin()
+        if (generationJob === job) {
+            generationJob = null
+        }
     }
 
     private suspend fun createNewConversation(): Conversation {
@@ -941,6 +992,7 @@ class ChatViewModel @Inject constructor(
     }
 
     private suspend fun ensureEngineReady(conversation: Conversation): EngineReadyResult? = engineMutex.withLock {
+        val inferenceParams = _uiState.value.inferenceParams
         val modelId = _uiState.value.selectedModelId
             ?: conversation.modelId.takeIf { it.isNotBlank() }
             ?: _uiState.value.availableModels.firstOrNull()?.id
@@ -960,7 +1012,12 @@ class ChatViewModel @Inject constructor(
         var loadDurationMs = 0L
         var replayedMessages = 0
         var resolutionNote: String? = resolution.resolutionNote
-        if (loadedModelId != textRuntimeModel.id || !ggufEngine.isModelLoaded()) {
+        val requiresReload =
+            loadedModelId != textRuntimeModel.id ||
+                !ggufEngine.isModelLoaded() ||
+                loadedInferenceSignature != inferenceParams
+
+        if (requiresReload) {
             val path = textRuntimeModel.localPath ?: "/data/models/${textRuntimeModel.fileName}"
 
             _uiState.update { state ->
@@ -981,7 +1038,7 @@ class ChatViewModel @Inject constructor(
             val loadStartedAtNs = System.nanoTime()
             ggufEngine.load(
                 modelPath = path,
-                params = _uiState.value.inferenceParams,
+                params = inferenceParams,
                 gpuAccelerationEnabled = gpuAccelerationEnabled,
                 gpuOffloadLayers = resolveDesiredGpuLayers(textRuntimeModel),
             )
@@ -993,6 +1050,7 @@ class ChatViewModel @Inject constructor(
             )
 
             loadedModelId = textRuntimeModel.id
+            loadedInferenceSignature = inferenceParams
 
             if (textRuntimeModel.id != model.id) {
                 _uiState.update { it.copy(selectedModelId = textRuntimeModel.id) }

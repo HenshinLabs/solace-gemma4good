@@ -1,5 +1,6 @@
 #include "LLMInference.h"
 #include <android/log.h>
+#include <algorithm>
 #include <cstring>
 #include <iomanip>
 #include <iostream>
@@ -24,6 +25,9 @@ void LLMInference::loadModel(
     const char *model_path,
     float minP,
     float temperature,
+    float topP,
+    int topK,
+    float repeatPenalty,
     bool storeChats,
     long contextSize,
     const char *chatTemplate,
@@ -52,7 +56,12 @@ void LLMInference::loadModel(
     // Create context
     llama_context_params ctx_params = llama_context_default_params();
     ctx_params.n_ctx = contextSize;
-    ctx_params.n_batch = contextSize;
+    const uint32_t tunedBatch = std::max<uint32_t>(
+        32U,
+        static_cast<uint32_t>(std::min<long>(contextSize, 1024L))
+    );
+    ctx_params.n_batch = tunedBatch;
+    ctx_params.n_ubatch = std::min<uint32_t>(tunedBatch, 512U);
     ctx_params.n_threads = nThreads;
     ctx_params.n_threads_batch = nThreads;
     ctx_params.no_perf = true;
@@ -68,9 +77,36 @@ void LLMInference::loadModel(
     sampler_params.no_perf = true;
     _sampler = llama_sampler_chain_init(sampler_params);
     
-    // Add samplers
-    llama_sampler_chain_add(_sampler, llama_sampler_init_temp(temperature));
-    llama_sampler_chain_add(_sampler, llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
+    // Add samplers (filtering -> penalties -> temperature -> final chooser)
+    const int32_t topKClamped = std::max<int32_t>(1, topK);
+    const float topPClamped = std::clamp(topP, 0.0f, 1.0f);
+    const float minPClamped = std::clamp(minP, 0.0f, 1.0f);
+    const float repeatPenaltyClamped = std::max(1.0f, repeatPenalty);
+    const float temperatureClamped = std::max(0.0f, temperature);
+
+    llama_sampler_chain_add(_sampler, llama_sampler_init_top_k(topKClamped));
+    llama_sampler_chain_add(
+        _sampler,
+        llama_sampler_init_top_p(topPClamped > 0.0f ? topPClamped : 1.0f, 1)
+    );
+
+    if (minPClamped > 0.0f) {
+        llama_sampler_chain_add(_sampler, llama_sampler_init_min_p(minPClamped, 1));
+    }
+
+    if (repeatPenaltyClamped > 1.0f) {
+        llama_sampler_chain_add(
+            _sampler,
+            llama_sampler_init_penalties(64, repeatPenaltyClamped, 0.0f, 0.0f)
+        );
+    }
+
+    if (temperatureClamped <= 0.0f) {
+        llama_sampler_chain_add(_sampler, llama_sampler_init_greedy());
+    } else {
+        llama_sampler_chain_add(_sampler, llama_sampler_init_temp(temperatureClamped));
+        llama_sampler_chain_add(_sampler, llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
+    }
     
     _formattedMessages = std::vector<char>(llama_n_ctx(_ctx));
     _messages.clear();

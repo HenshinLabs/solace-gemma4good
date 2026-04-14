@@ -20,6 +20,7 @@ import com.masterllm.core.domain.repository.ModelRepository
 import com.masterllm.core.domain.repository.RoleplayRepository
 import com.masterllm.core.domain.repository.SettingsRepository
 import com.masterllm.runtime.gguf.GgufEngine
+import com.masterllm.runtime.gguf.GgufRuntimeCoordinator
 import com.masterllm.runtime.gguf.PerformanceUsageSampler
 import com.masterllm.runtime.imagegen.ImageGenEngine
 import com.masterllm.runtime.imagegen.ImageGenProgress
@@ -32,6 +33,7 @@ import javax.inject.Inject
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -151,6 +153,7 @@ class RoleplayViewModel @Inject constructor(
     private val modelRepository: ModelRepository,
     private val settingsRepository: SettingsRepository,
     private val ggufEngine: GgufEngine,
+    private val runtimeCoordinator: GgufRuntimeCoordinator,
     private val imageGenEngine: ImageGenEngine,
     private val safetensorsEngine: SafetensorsEngine,
     @ApplicationContext private val appContext: Context,
@@ -168,9 +171,10 @@ class RoleplayViewModel @Inject constructor(
     private var messagesJob: Job? = null
     private var generationJob: Job? = null
     private var loadedModelId: String? = null
+    private var loadedInferenceSignature: InferenceParams? = null
     private var loadedImageModelId: String? = null
     private var gpuAccelerationEnabled: Boolean = false
-    private val engineMutex = Mutex()
+    private val engineMutex = runtimeCoordinator.engineMutex
 
     init {
         viewModelScope.launch {
@@ -271,8 +275,24 @@ class RoleplayViewModel @Inject constructor(
     }
 
     private fun updateInferenceParams(update: (InferenceParams) -> InferenceParams) {
+        var paramsChanged = false
         _uiState.update { state ->
-            state.copy(inferenceParams = update(state.inferenceParams))
+            val newParams = update(state.inferenceParams)
+            paramsChanged = newParams != state.inferenceParams
+            state.copy(
+                inferenceParams = newParams,
+                modelRuntime = if (paramsChanged && state.modelRuntime.statusLabel == "Loaded") {
+                    state.modelRuntime.copy(
+                        statusLabel = "Idle",
+                        note = "Inference settings changed. Runtime will reload on next generation.",
+                    )
+                } else {
+                    state.modelRuntime
+                },
+            )
+        }
+        if (paramsChanged) {
+            loadedInferenceSignature = null
         }
     }
 
@@ -451,7 +471,7 @@ class RoleplayViewModel @Inject constructor(
     private fun selectModel(modelId: String) {
         viewModelScope.launch {
             if (_uiState.value.isGenerating) {
-                stopGeneration()
+                cancelGenerationIfRunning()
             }
 
             val selectedModel = modelRepository.getModelById(modelId)
@@ -485,8 +505,11 @@ class RoleplayViewModel @Inject constructor(
             }
 
             if (loadedModelId != null && loadedModelId != modelId) {
-                ggufEngine.close()
-                loadedModelId = null
+                engineMutex.withLock {
+                    ggufEngine.close()
+                    loadedModelId = null
+                    loadedInferenceSignature = null
+                }
             }
             if (loadedImageModelId != null && loadedImageModelId != modelId) {
                 imageGenEngine.unloadModel()
@@ -631,7 +654,9 @@ class RoleplayViewModel @Inject constructor(
                 _uiState.update { it.copy(generationStatus = "Processing prompt...") }
 
                 val builder = StringBuilder()
-                val promptTokens = ggufEngine.getContextLengthUsed()
+                val promptTokens = engineMutex.withLock {
+                    ggufEngine.getContextLengthUsed()
+                }
                 val generationStartSnapshot = PerformanceUsageSampler.captureSnapshot()
                 val startedAtNs = System.nanoTime()
                 var firstTokenAtNs: Long? = null
@@ -639,15 +664,20 @@ class RoleplayViewModel @Inject constructor(
                 var streamError: Throwable? = null
 
                 try {
-                    ggufEngine.getResponseAsFlow(text).collect { piece ->
-                        if (!_uiState.value.isGenerating) throw CancellationException("Generation stopped")
-                        if (firstTokenAtNs == null) {
-                            firstTokenAtNs = System.nanoTime()
-                            firstTokenSnapshot = PerformanceUsageSampler.captureSnapshot()
-                            _uiState.update { state -> state.copy(generationStatus = "Generating response...") }
+                    engineMutex.withLock {
+                        ggufEngine.getResponseAsFlow(
+                            text,
+                            maxTokens = _uiState.value.inferenceParams.maxTokens,
+                        ).collect { piece ->
+                            if (!_uiState.value.isGenerating) throw CancellationException("Generation stopped")
+                            if (firstTokenAtNs == null) {
+                                firstTokenAtNs = System.nanoTime()
+                                firstTokenSnapshot = PerformanceUsageSampler.captureSnapshot()
+                                _uiState.update { state -> state.copy(generationStatus = "Generating response...") }
+                            }
+                            builder.append(piece)
+                            _uiState.update { it.copy(streamingText = builder.toString()) }
                         }
-                        builder.append(piece)
-                        _uiState.update { it.copy(streamingText = builder.toString()) }
                     }
                 } catch (cancelled: CancellationException) {
                     throw cancelled
@@ -686,7 +716,18 @@ class RoleplayViewModel @Inject constructor(
                 val decodeElapsedMs = firstTokenAtNs
                     ?.let { ((completedAtNs - it) / 1_000_000L).coerceAtLeast(1L) }
                     ?: totalElapsedMs
-                val generatedTokens = (ggufEngine.getContextLengthUsed() - promptTokens).coerceAtLeast(0)
+                var generatedTokens = 0
+                var nativePromptSpeed = 0f
+                var nativeDecodeSpeed = 0f
+                var activeThreads = _uiState.value.inferenceParams.numThreads
+                var activeGpuLayers = resolveDesiredGpuLayers(activeModel)
+                engineMutex.withLock {
+                    generatedTokens = (ggufEngine.getContextLengthUsed() - promptTokens).coerceAtLeast(0)
+                    nativePromptSpeed = ggufEngine.getPromptProcessingSpeed()
+                    nativeDecodeSpeed = ggufEngine.getResponseGenerationSpeed()
+                    activeThreads = ggufEngine.getConfiguredThreadCount().coerceAtLeast(1)
+                    activeGpuLayers = ggufEngine.getConfiguredGpuLayers().coerceAtLeast(0)
+                }
                 val promptTokensPerSecond = if (firstTokenLatencyMs > 0) {
                     promptTokens.toDouble() / (firstTokenLatencyMs / 1000.0)
                 } else {
@@ -697,10 +738,6 @@ class RoleplayViewModel @Inject constructor(
                 } else {
                     0.0
                 }
-                val nativePromptSpeed = ggufEngine.getPromptProcessingSpeed()
-                val nativeDecodeSpeed = ggufEngine.getResponseGenerationSpeed()
-                val activeThreads = ggufEngine.getConfiguredThreadCount().coerceAtLeast(1)
-                val activeGpuLayers = ggufEngine.getConfiguredGpuLayers().coerceAtLeast(0)
                 val promptUsage = PerformanceUsageSampler.computeUsage(
                     start = generationStartSnapshot,
                     end = firstTokenSnapshot ?: generationEndSnapshot,
@@ -762,9 +799,18 @@ class RoleplayViewModel @Inject constructor(
     }
 
     private fun stopGeneration() {
+        viewModelScope.launch {
+            cancelGenerationIfRunning()
+        }
+    }
+
+    private suspend fun cancelGenerationIfRunning() {
+        val job = generationJob ?: return
         _uiState.update { it.copy(isGenerating = false, generationStatus = null) }
-        generationJob?.cancel()
-        generationJob = null
+        job.cancelAndJoin()
+        if (generationJob === job) {
+            generationJob = null
+        }
     }
 
     private fun observeMessages(conversationId: String) {
@@ -777,6 +823,7 @@ class RoleplayViewModel @Inject constructor(
     }
 
     private suspend fun ensureEngineReady(session: RoleplaySession): EngineReadyResult? = engineMutex.withLock {
+        val inferenceParams = _uiState.value.inferenceParams
         val conversation = conversationRepository.getConversationById(session.conversationId)
         val modelId = _uiState.value.selectedModelId
             ?: conversation?.modelId?.takeIf { it.isNotBlank() }
@@ -806,13 +853,18 @@ class RoleplayViewModel @Inject constructor(
 
         var loadDurationMs = 0L
         var replayedMessages = 0
-        if (loadedModelId != textRuntimeModel.id || !ggufEngine.isModelLoaded()) {
+        val requiresReload =
+            loadedModelId != textRuntimeModel.id ||
+                !ggufEngine.isModelLoaded() ||
+                loadedInferenceSignature != inferenceParams
+
+        if (requiresReload) {
             val path = textRuntimeModel.localPath ?: "/data/models/${textRuntimeModel.fileName}"
 
             val loadStartedAtNs = System.nanoTime()
             ggufEngine.load(
                 modelPath = path,
-                params = _uiState.value.inferenceParams,
+                params = inferenceParams,
                 gpuAccelerationEnabled = gpuAccelerationEnabled,
                 gpuOffloadLayers = resolveDesiredGpuLayers(textRuntimeModel),
             )
@@ -820,10 +872,11 @@ class RoleplayViewModel @Inject constructor(
 
             replayedMessages = replayConversationContext(
                 conversationId = session.conversationId,
-                configuredSystemPrompt = _uiState.value.inferenceParams.systemPrompt,
+                configuredSystemPrompt = inferenceParams.systemPrompt,
             )
 
             loadedModelId = textRuntimeModel.id
+            loadedInferenceSignature = inferenceParams
         }
 
         val activeThreads = if (ggufEngine.isModelLoaded()) {
