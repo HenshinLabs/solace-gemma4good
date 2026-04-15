@@ -4,6 +4,7 @@ import android.graphics.BitmapFactory
 import androidx.compose.animation.*
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -30,8 +31,10 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.masterllm.core.domain.model.LlmModel
 import com.masterllm.core.domain.model.Message
 import com.masterllm.core.domain.model.MessageRole
+import com.masterllm.core.domain.model.ModelFormat
 import com.masterllm.core.ui.components.*
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -97,36 +100,22 @@ private fun ConversationListPane(
                         IconButton(onClick = { modelMenuExpanded = true }) {
                             Icon(Icons.Default.ModelTraining, contentDescription = "Select model")
                         }
-                        DropdownMenu(
-                            expanded = modelMenuExpanded,
-                            onDismissRequest = { modelMenuExpanded = false },
-                        ) {
-                            state.availableModels.forEach { model ->
-                                DropdownMenuItem(
-                                    text = {
-                                        Column {
-                                            Text(model.displayName.ifBlank { model.repoId })
-                                            if (model.quantization.isNotBlank()) {
-                                                Text(
-                                                    text = model.quantization,
-                                                    style = MaterialTheme.typography.labelSmall,
-                                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
-                                                )
-                                            }
-                                        }
-                                    },
-                                    onClick = {
-                                        onAction(ChatAction.SelectModel(model.id))
-                                        modelMenuExpanded = false
-                                    },
-                                    trailingIcon = {
-                                        if (state.selectedModelId == model.id) {
-                                            Icon(Icons.Default.Check, contentDescription = null)
-                                        }
-                                    },
-                                )
-                            }
-                        }
+DropdownMenu(
+expanded = modelMenuExpanded,
+onDismissRequest = { modelMenuExpanded = false },
+) {
+state.availableModels.forEach { model ->
+ModelDropdownItem(
+model = model,
+isSelected = state.selectedModelId == model.id,
+isLoaded = state.modelRuntime.modelId == model.id && state.modelRuntime.status == ModelLoadStatus.LOADED,
+onClick = {
+onAction(ChatAction.SelectModel(model.id))
+modelMenuExpanded = false
+},
+)
+}
+}
                     }
                     IconButton(onClick = { onAction(ChatAction.NewConversation) }) {
                         Icon(Icons.Default.Add, contentDescription = "New chat")
@@ -265,36 +254,22 @@ private fun ChatPane(
                     IconButton(onClick = { modelMenuExpanded = true }) {
                         Icon(Icons.Default.ModelTraining, contentDescription = "Select model")
                     }
-                    DropdownMenu(
-                        expanded = modelMenuExpanded,
-                        onDismissRequest = { modelMenuExpanded = false },
-                    ) {
-                        state.availableModels.forEach { model ->
-                            DropdownMenuItem(
-                                text = {
-                                    Column {
-                                        Text(model.displayName.ifBlank { model.repoId })
-                                        if (model.quantization.isNotBlank()) {
-                                            Text(
-                                                text = model.quantization,
-                                                style = MaterialTheme.typography.labelSmall,
-                                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
-                                            )
-                                        }
-                                    }
-                                },
-                                onClick = {
-                                    onAction(ChatAction.SelectModel(model.id))
-                                    modelMenuExpanded = false
-                                },
-                                trailingIcon = {
-                                    if (state.selectedModelId == model.id) {
-                                        Icon(Icons.Default.Check, contentDescription = null)
-                                    }
-                                },
-                            )
-                        }
-                    }
+DropdownMenu(
+expanded = modelMenuExpanded,
+onDismissRequest = { modelMenuExpanded = false },
+) {
+state.availableModels.forEach { model ->
+ModelDropdownItem(
+model = model,
+isSelected = state.selectedModelId == model.id,
+isLoaded = state.modelRuntime.modelId == model.id && state.modelRuntime.status == ModelLoadStatus.LOADED,
+onClick = {
+onAction(ChatAction.SelectModel(model.id))
+modelMenuExpanded = false
+},
+)
+}
+}
                 }
             },
             )
@@ -561,10 +536,120 @@ private fun ModelRuntimeCard(
 }
 
 private fun ModelLoadStatus.label(): String = when (this) {
-    ModelLoadStatus.IDLE -> "Idle"
-    ModelLoadStatus.LOADING -> "Loading"
-    ModelLoadStatus.LOADED -> "Loaded"
-    ModelLoadStatus.ERROR -> "Error"
+ModelLoadStatus.IDLE -> "Idle"
+ModelLoadStatus.LOADING -> "Loading"
+ModelLoadStatus.LOADED -> "Loaded"
+ModelLoadStatus.ERROR -> "Error"
+}
+
+@Composable
+private fun ModelFormatBadge(format: ModelFormat, modifier: Modifier = Modifier) {
+val (label, containerColor, contentColor) = when (format) {
+ModelFormat.GGUF -> Triple("GGUF", MaterialTheme.colorScheme.primaryContainer, MaterialTheme.colorScheme.onPrimaryContainer)
+ModelFormat.SAFETENSORS -> Triple("ST", MaterialTheme.colorScheme.secondaryContainer, MaterialTheme.colorScheme.onSecondaryContainer)
+ModelFormat.DIFFUSERS -> Triple("IMG", MaterialTheme.colorScheme.tertiaryContainer, MaterialTheme.colorScheme.onTertiaryContainer)
+}
+Surface(
+shape = RoundedCornerShape(4.dp),
+color = containerColor,
+modifier = modifier
+) {
+Text(
+text = label,
+style = MaterialTheme.typography.labelSmall,
+color = contentColor,
+fontWeight = FontWeight.SemiBold,
+modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+)
+}
+}
+
+@Composable
+private fun ModelDropdownItem(
+model: LlmModel,
+isSelected: Boolean,
+isLoaded: Boolean,
+onClick: () -> Unit,
+) {
+DropdownMenuItem(
+text = {
+Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+Row(
+horizontalArrangement = Arrangement.spacedBy(6.dp),
+verticalAlignment = Alignment.CenterVertically,
+) {
+ModelFormatBadge(format = model.format)
+Text(
+text = model.displayName.ifBlank { model.repoId },
+style = MaterialTheme.typography.bodyMedium,
+fontWeight = FontWeight.Medium,
+maxLines = 1,
+overflow = TextOverflow.Ellipsis,
+modifier = Modifier.weight(1f, fill = false),
+)
+if (isLoaded) {
+Icon(
+imageVector = Icons.Default.Circle,
+contentDescription = "Loaded",
+tint = MaterialTheme.colorScheme.primary,
+modifier = Modifier.size(8.dp),
+)
+}
+}
+Row(
+horizontalArrangement = Arrangement.spacedBy(8.dp),
+verticalAlignment = Alignment.CenterVertically,
+) {
+if (model.quantization.isNotBlank()) {
+AssistChip(
+onClick = {},
+label = { Text(model.quantization, style = MaterialTheme.typography.labelSmall) },
+colors = AssistChipDefaults.assistChipColors(
+containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+),
+border = null,
+modifier = Modifier.height(24.dp),
+)
+}
+SizeBadge(sizeBytes = model.sizeBytes)
+if (model.parameterCount.isNotBlank()) {
+Text(
+text = model.parameterCount,
+style = MaterialTheme.typography.labelSmall,
+color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+)
+}
+if (model.contextLength > 0) {
+Text(
+text = "ctx: ${model.contextLength}",
+style = MaterialTheme.typography.labelSmall,
+color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
+)
+}
+}
+}
+},
+onClick = onClick,
+trailingIcon = {
+if (isSelected) {
+Icon(
+imageVector = Icons.Default.Check,
+contentDescription = "Selected",
+tint = MaterialTheme.colorScheme.primary,
+)
+}
+},
+leadingIcon = if (isLoaded) {
+{
+Icon(
+imageVector = Icons.Default.Memory,
+contentDescription = "Currently loaded",
+tint = MaterialTheme.colorScheme.primary,
+modifier = Modifier.size(20.dp),
+)
+}
+} else null,
+)
 }
 
 @Composable
