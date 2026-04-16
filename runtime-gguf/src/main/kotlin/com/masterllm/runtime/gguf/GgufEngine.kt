@@ -117,64 +117,77 @@ class GgufEngine @Inject constructor(
     private var isLoaded = false
     private val nativeOpsMutex = Mutex()
     
-    /**
-     * Loads a GGUF model from the given path.
-     * 
-     * @param modelPath The path to the GGUF model file
-     * @param params Inference parameters from core-domain
-     * @return Result indicating success or failure
-     */
-    suspend fun load(
-        modelPath: String, 
-        params: com.masterllm.core.domain.model.InferenceParams = com.masterllm.core.domain.model.InferenceParams(),
-        gpuAccelerationEnabled: Boolean = false,
-        gpuOffloadLayers: Int? = null,
-    ) = withContext(Dispatchers.IO) {
-        nativeOpsMutex.withLock {
-            val ggufReader = GGUFReader()
-            ggufReader.load(modelPath)
+/**
+* Loads a GGUF model from the given path.
+*
+* @param modelPath The path to the GGUF model file
+* @param params Inference parameters from core-domain
+* @return Result indicating success or failure
+*/
+suspend fun load(
+modelPath: String,
+params: com.masterllm.core.domain.model.InferenceParams = com.masterllm.core.domain.model.InferenceParams(),
+gpuAccelerationEnabled: Boolean = false,
+gpuOffloadLayers: Int? = null,
+) = withContext(Dispatchers.IO) {
+nativeOpsMutex.withLock {
+val ggufReader = GGUFReader()
+ggufReader.load(modelPath)
 
-            val modelContextSize = ggufReader.getContextSize() ?: DEFAULT_CONTEXT_SIZE
-            val modelChatTemplate = ggufReader.getChatTemplate() ?: DEFAULT_CHAT_TEMPLATE
-            val actualContextSize = params.contextSize?.toLong()?.coerceAtLeast(512L) ?: modelContextSize
-            val actualChatTemplate = params.chatTemplate?.takeIf { it.isNotBlank() } ?: modelChatTemplate
-            val resolvedGpuLayers = if (gpuAccelerationEnabled) {
-                (gpuOffloadLayers ?: 99).coerceAtLeast(0)
-            } else {
-                0
-            }
+val modelContextSize = ggufReader.getContextSize() ?: DEFAULT_CONTEXT_SIZE
+val modelChatTemplate = ggufReader.getChatTemplate() ?: DEFAULT_CHAT_TEMPLATE
+val actualContextSize = params.contextSize?.toLong()?.coerceAtLeast(512L) ?: modelContextSize
+val actualChatTemplate = params.chatTemplate?.takeIf { it.isNotBlank() } ?: modelChatTemplate
+val resolvedGpuLayers = if (gpuAccelerationEnabled) {
+(gpuOffloadLayers ?: 99).coerceAtLeast(0)
+} else {
+0
+}
 
-            if (nativePtr != 0L) {
-                close(nativePtr)
-                nativePtr = 0L
-                isLoaded = false
-            }
+val autoThreads = if (params.numThreads <= 0) {
+Runtime.getRuntime().availableProcessors().coerceAtLeast(4)
+} else {
+params.numThreads
+}
 
-            nativePtr = loadModel(
-                modelPath,
-                params.minP,
-                params.temperature,
-                params.topP,
-                params.topK,
-                params.repeatPenalty,
-                params.storeChats,
-                actualContextSize,
-                actualChatTemplate,
-                params.numThreads.coerceAtLeast(1),
-                resolvedGpuLayers,
-                params.useMmap,
-                params.useMlock,
-            )
+val actualNBatch = if (params.nBatch > 0) params.nBatch else actualContextSize.toInt()
+val actualNUbatch = if (params.nUbatch > 0) params.nUbatch else actualNBatch
 
-            isLoaded = nativePtr != 0L
+if (nativePtr != 0L) {
+close(nativePtr)
+nativePtr = 0L
+isLoaded = false
+}
 
-            if (isLoaded) {
-                Log.i("GgufEngine", "Model loaded successfully: $modelPath")
-            } else {
-                throw IllegalStateException("Failed to load model")
-            }
-        }
-    }
+nativePtr = loadModel(
+modelPath,
+params.minP,
+params.temperature,
+params.topP,
+params.topK,
+params.repeatPenalty,
+params.repeatPenaltyLastN,
+params.seed,
+params.storeChats,
+actualContextSize,
+actualChatTemplate,
+autoThreads,
+resolvedGpuLayers,
+params.useMmap,
+params.useMlock,
+actualNBatch,
+actualNUbatch,
+)
+
+isLoaded = nativePtr != 0L
+
+if (isLoaded) {
+Log.i("GgufEngine", "Model loaded: $modelPath, threads=$autoThreads, nBatch=$actualNBatch, nUbatch=$actualNUbatch")
+} else {
+throw IllegalStateException("Failed to load model")
+}
+}
+}
     
     /**
      * Adds a user message to the conversation history.
@@ -353,22 +366,26 @@ class GgufEngine @Inject constructor(
         return handle
     }
     
-    // Native methods
-    private external fun loadModel(
-        modelPath: String,
-        minP: Float,
-        temperature: Float,
-        topP: Float,
-        topK: Int,
-        repeatPenalty: Float,
-        storeChats: Boolean,
-        contextSize: Long,
-        chatTemplate: String,
-        nThreads: Int,
-        nGpuLayers: Int,
-        useMmap: Boolean,
-        useMlock: Boolean,
-    ): Long
+// Native methods
+private external fun loadModel(
+modelPath: String,
+minP: Float,
+temperature: Float,
+topP: Float,
+topK: Int,
+repeatPenalty: Float,
+repeatPenaltyLastN: Float,
+seed: Long,
+storeChats: Boolean,
+contextSize: Long,
+chatTemplate: String,
+nThreads: Int,
+nGpuLayers: Int,
+useMmap: Boolean,
+useMlock: Boolean,
+nBatch: Int,
+nUbatch: Int,
+): Long
     
     private external fun addChatMessage(
         modelPtr: Long,

@@ -49,21 +49,25 @@ public:
     LLMInference(const LLMInference&) = delete;
     LLMInference& operator=(const LLMInference&) = delete;
     
-    void loadModel(
-        const char* model_path,
-        float minP,
-        float temperature,
-        float topP,
-        int topK,
-        float repeatPenalty,
-        bool storeChats,
-        long contextSize,
-        const char* chatTemplate,
-        int nThreads,
-        int nGpuLayers,
-        bool useMmap,
-        bool useMlock
-    );
+void loadModel(
+const char* model_path,
+float minP,
+float temperature,
+float topP,
+int topK,
+float repeatPenalty,
+float repeatPenaltyLastN,
+int64_t seed,
+bool storeChats,
+long contextSize,
+const char* chatTemplate,
+int nThreads,
+int nGpuLayers,
+bool useMmap,
+bool useMlock,
+int nBatch,
+int nUbatch
+);
     
     void addChatMessage(const char* message, const char* role);
     float getResponseGenerationTime() const;

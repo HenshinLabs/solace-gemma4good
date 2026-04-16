@@ -11,26 +11,34 @@
 
 extern "C" JNIEXPORT jlong JNICALL
 Java_com_masterllm_runtime_gguf_GgufEngine_loadModel(
-    JNIEnv* env,
-    jobject /*thiz*/,
-    jstring modelPath,
-    jfloat minP,
-    jfloat temperature,
-    jboolean storeChats,
-    jlong contextSize,
-    jstring chatTemplate,
-    jint nThreads,
-    jint nGpuLayers,
-    jboolean useMmap,
-    jboolean useMlock
+JNIEnv* env,
+jobject /*thiz*/,
+jstring modelPath,
+jfloat minP,
+jfloat temperature,
+jfloat topP,
+jint topK,
+jfloat repeatPenalty,
+jfloat repeatPenaltyLastN,
+jlong seed,
+jboolean storeChats,
+jlong contextSize,
+jstring chatTemplate,
+jint nThreads,
+jint nGpuLayers,
+jboolean useMmap,
+jboolean useMlock,
+jint nBatch,
+jint nUbatch
 ) {
-    const char* path = env->GetStringUTFChars(modelPath, nullptr);
-    LOGI("Loading model (stub): %s", path);
-    LOGI("Params: minP=%f, temp=%f, threads=%d, gpuLayers=%d, ctx=%ld", minP, temperature, nThreads, nGpuLayers, contextSize);
-    env->ReleaseStringUTFChars(modelPath, path);
-    
-    // Return a dummy handle
-    return 1L;
+const char* path = env->GetStringUTFChars(modelPath, nullptr);
+LOGI("Loading model (stub): %s", path);
+LOGI("Params: minP=%f, temp=%f, topP=%f, topK=%d, rPenalty=%f, threads=%d, gpuLayers=%d, ctx=%ld, nBatch=%d, nUbatch=%d",
+minP, temperature, topP, topK, repeatPenalty, nThreads, nGpuLayers, contextSize, nBatch, nUbatch);
+env->ReleaseStringUTFChars(modelPath, path);
+
+// Return a dummy handle
+return 1L;
 }
 
 extern "C" JNIEXPORT void JNICALL

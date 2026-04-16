@@ -3,55 +3,63 @@
 
 extern "C" JNIEXPORT jlong JNICALL
 Java_com_masterllm_runtime_gguf_GgufEngine_loadModel(
-    JNIEnv* env,
-    jobject /*thiz*/,
-    jstring modelPath,
-    jfloat minP,
-    jfloat temperature,
-    jfloat topP,
-    jint topK,
-    jfloat repeatPenalty,
-    jboolean storeChats,
-    jlong contextSize,
-    jstring chatTemplate,
-    jint nThreads,
-    jint nGpuLayers,
-    jboolean useMmap,
-    jboolean useMlock
+JNIEnv* env,
+jobject /*thiz*/,
+jstring modelPath,
+jfloat minP,
+jfloat temperature,
+jfloat topP,
+jint topK,
+jfloat repeatPenalty,
+jfloat repeatPenaltyLastN,
+jlong seed,
+jboolean storeChats,
+jlong contextSize,
+jstring chatTemplate,
+jint nThreads,
+jint nGpuLayers,
+jboolean useMmap,
+jboolean useMlock,
+jint nBatch,
+jint nUbatch
 ) {
-    jboolean isCopy = true;
-    const char* modelPathCstr = env->GetStringUTFChars(modelPath, &isCopy);
-    auto* llmInference = new LLMInference();
-    const char* chatTemplateCstr = chatTemplate ? env->GetStringUTFChars(chatTemplate, &isCopy) : nullptr;
-    
-    try {
-        llmInference->loadModel(
-            modelPathCstr,
-            minP,
-            temperature,
-            topP,
-            topK,
-            repeatPenalty,
-            storeChats,
-            contextSize,
-            chatTemplateCstr,
-            nThreads,
-            nGpuLayers,
-            useMmap,
-            useMlock
-        );
-    } catch (std::exception& error) {
-        env->ReleaseStringUTFChars(modelPath, modelPathCstr);
-        if (chatTemplateCstr) env->ReleaseStringUTFChars(chatTemplate, chatTemplateCstr);
-        delete llmInference;
-        env->ThrowNew(env->FindClass("java/lang/IllegalStateException"), error.what());
-        return 0;
-    }
-    
-    env->ReleaseStringUTFChars(modelPath, modelPathCstr);
-    if (chatTemplateCstr) env->ReleaseStringUTFChars(chatTemplate, chatTemplateCstr);
-    
-    return reinterpret_cast<jlong>(llmInference);
+jboolean isCopy = true;
+const char* modelPathCstr = env->GetStringUTFChars(modelPath, &isCopy);
+auto* llmInference = new LLMInference();
+const char* chatTemplateCstr = chatTemplate ? env->GetStringUTFChars(chatTemplate, &isCopy) : nullptr;
+
+try {
+llmInference->loadModel(
+modelPathCstr,
+minP,
+temperature,
+topP,
+topK,
+repeatPenalty,
+repeatPenaltyLastN,
+seed,
+storeChats,
+contextSize,
+chatTemplateCstr,
+nThreads,
+nGpuLayers,
+useMmap,
+useMlock,
+nBatch,
+nUbatch
+);
+} catch (std::exception& error) {
+env->ReleaseStringUTFChars(modelPath, modelPathCstr);
+if (chatTemplateCstr) env->ReleaseStringUTFChars(chatTemplate, chatTemplateCstr);
+delete llmInference;
+env->ThrowNew(env->FindClass("java/lang/IllegalStateException"), error.what());
+return 0;
+}
+
+env->ReleaseStringUTFChars(modelPath, modelPathCstr);
+if (chatTemplateCstr) env->ReleaseStringUTFChars(chatTemplate, chatTemplateCstr);
+
+return reinterpret_cast<jlong>(llmInference);
 }
 
 extern "C" JNIEXPORT void JNICALL
