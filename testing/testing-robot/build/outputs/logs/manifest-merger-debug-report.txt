@@ -1,0 +1,14 @@
+-- Merging decision tree log ---
+manifest
+ADDED from /store/shuvam/android_app_dev/Master_LLM/testing/testing-robot/src/main/AndroidManifest.xml:2:1-13
+INJECTED from /store/shuvam/android_app_dev/Master_LLM/testing/testing-robot/src/main/AndroidManifest.xml:2:1-13
+	package
+		INJECTED from /store/shuvam/android_app_dev/Master_LLM/testing/testing-robot/src/main/AndroidManifest.xml
+uses-sdk
+INJECTED from /store/shuvam/android_app_dev/Master_LLM/testing/testing-robot/src/main/AndroidManifest.xml reason: use-sdk injection requested
+INJECTED from /store/shuvam/android_app_dev/Master_LLM/testing/testing-robot/src/main/AndroidManifest.xml
+INJECTED from /store/shuvam/android_app_dev/Master_LLM/testing/testing-robot/src/main/AndroidManifest.xml
+	android:targetSdkVersion
+		INJECTED from /store/shuvam/android_app_dev/Master_LLM/testing/testing-robot/src/main/AndroidManifest.xml
+	android:minSdkVersion
+		INJECTED from /store/shuvam/android_app_dev/Master_LLM/testing/testing-robot/src/main/AndroidManifest.xml

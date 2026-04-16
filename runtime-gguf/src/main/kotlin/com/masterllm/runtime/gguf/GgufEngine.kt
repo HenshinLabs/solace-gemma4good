@@ -107,7 +107,7 @@ class GgufEngine @Inject constructor(
         private fun supportsArm64V8a(): Boolean = 
             Build.SUPPORTED_ABIS[0]?.equals("arm64-v8a") == true
 
-        const val DEFAULT_CONTEXT_SIZE: Long = 2048L
+        const val DEFAULT_CONTEXT_SIZE: Long = 1024L
         const val DEFAULT_CHAT_TEMPLATE = "{% for message in messages %}{% if loop.first and messages[0]['role'] != 'system' %}{{ '<|im_start|>system\\nYou are a helpful AI assistant.\\n<|im_end|>\\n' }}{% endif %}{{'<|im_start|>' + message['role'] + '\\n' + message['content'] + '<|im_end|>\\n'}}{% endfor %}{% if add_generation_prompt %}{{ '<|im_start|>assistant\\n' }}{% endif %}"
 
         fun getLoadedNativeLibraryName(): String = loadedNativeLibrary
@@ -145,13 +145,13 @@ val resolvedGpuLayers = if (gpuAccelerationEnabled) {
 }
 
 val autoThreads = if (params.numThreads <= 0) {
-Runtime.getRuntime().availableProcessors().coerceAtLeast(4)
+minOf(Runtime.getRuntime().availableProcessors(), 4)
 } else {
 params.numThreads
 }
 
 val actualNBatch = if (params.nBatch > 0) params.nBatch else actualContextSize.toInt()
-val actualNUbatch = if (params.nUbatch > 0) params.nUbatch else actualNBatch
+val actualNUbatch = if (params.nUbatch > 0) params.nUbatch else minOf(actualNBatch, 512)
 
 if (nativePtr != 0L) {
 close(nativePtr)

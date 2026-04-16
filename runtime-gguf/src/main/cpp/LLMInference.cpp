@@ -66,7 +66,7 @@ ctx_params.n_ctx = contextSize;
 ctx_params.n_batch = nBatch > 0 ? nBatch : static_cast<int>(contextSize);
 ctx_params.n_ubatch = nUbatch > 0 ? nUbatch : ctx_params.n_batch;
 ctx_params.n_threads = nThreads;
-ctx_params.n_threads_batch = std::min(nThreads * 2, 8);  // Batch uses more threads
+ctx_params.n_threads_batch = nThreads;
 ctx_params.no_perf = true;
 
 LOGi("llama_context: n_ctx=%d, n_batch=%d, n_ubatch=%d, n_threads=%d, n_threads_batch=%d",
@@ -93,11 +93,15 @@ const float temperatureClamped = std::max(0.0f, temperature);
 const int32_t repeatLastN = std::max(64, static_cast<int32_t>(repeatPenaltyLastN));
 const int64_t resolvedSeed = seed >= 0 ? seed : LLAMA_DEFAULT_SEED;
 
-llama_sampler_chain_add(_sampler, llama_sampler_init_top_k(topKClamped));
-llama_sampler_chain_add(
-_sampler,
-llama_sampler_init_top_p(topPClamped > 0.0f ? topPClamped : 1.0f, 1)
-);
+if (topK > 0) {
+    llama_sampler_chain_add(_sampler, llama_sampler_init_top_k(topKClamped));
+}
+if (topPClamped > 0.0f && topPClamped < 1.0f) {
+    llama_sampler_chain_add(
+        _sampler,
+        llama_sampler_init_top_p(topPClamped, 1)
+    );
+}
 
 if (minPClamped > 0.0f) {
 llama_sampler_chain_add(_sampler, llama_sampler_init_min_p(minPClamped, 1));
