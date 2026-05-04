@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Cloud
+import androidx.compose.material.icons.filled.ModelTraining
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
@@ -33,6 +34,7 @@ fun OllamaSettingsSection(
     onKeepAliveChanged: (String) -> Unit,
     onSystemPromptChanged: (String) -> Unit,
     onTestConnection: () -> Unit,
+    onOpenOllamaExplorer: () -> Unit = {},
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         SettingSwitchRow(
@@ -154,6 +156,28 @@ fun OllamaSettingsSection(
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                 singleLine = true,
             )
+
+            HorizontalDivider()
+
+            Text(
+                text = "Model Library",
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                text = "Browse and download models from the Ollama library",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(8.dp))
+            FilledTonalButton(
+                onClick = onOpenOllamaExplorer,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Icon(Icons.Default.ModelTraining, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
+                Text("Browse Ollama Library")
+            }
         }
     }
 }

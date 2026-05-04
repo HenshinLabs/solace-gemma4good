@@ -34,6 +34,7 @@ import com.masterllm.feature.marketplace.MarketplaceScreen
 import com.masterllm.feature.model.manager.ModelManagerScreen
 import com.masterllm.feature.roleplay.RoleplayScreen
 import com.masterllm.feature.performance.PerformanceMonitorScreen
+import com.masterllm.feature.settings.OllamaModelExplorerScreen
 import com.masterllm.feature.settings.SettingsScreen
 
 /** Route identifiers for each top-level destination. */
@@ -48,6 +49,7 @@ object Routes {
     const val MODEL_MANAGER = "model_manager"
     const val PERFORMANCE = "performance"
     const val TASK_TEMPLATES = "task_templates"
+    const val OLLAMA_EXPLORER = "ollama_explorer"
 }
 
 /** Bottom navigation tab definitions. */
@@ -150,6 +152,7 @@ fun MasterLLMApp(modifier: Modifier = Modifier) {
                     onOpenModelManager = { navController.navigate(Routes.MODEL_MANAGER) },
                     onOpenImageGen = { navController.navigate(Routes.IMAGE_GEN) },
                     onOpenPerformance = { navController.navigate(Routes.PERFORMANCE) },
+                    onOpenOllamaExplorer = { navController.navigate(Routes.OLLAMA_EXPLORER) },
                 )
             }
 
@@ -173,14 +176,15 @@ fun MasterLLMApp(modifier: Modifier = Modifier) {
                 )
             }
             composable(Routes.TASK_TEMPLATES) {
-                val chatViewModel: com.masterllm.feature.chat.ChatViewModel = androidx.hilt.navigation.compose.hiltViewModel()
                 TaskTemplatesScreen(
                     onBackClick = { navController.popBackStack() },
-                    onApplyTemplate = { systemPrompt, starterPrompt ->
-                        chatViewModel.onAction(
-                            com.masterllm.feature.chat.ChatAction.ApplyTaskTemplate(systemPrompt, starterPrompt)
-                        )
-                    },
+                    onApplyTemplate = { _, _ -> navController.popBackStack() },
+                )
+            }
+            composable(Routes.OLLAMA_EXPLORER) {
+                OllamaModelExplorerScreen(
+                    onNavigateBack = { navController.popBackStack() },
+                    modifier = Modifier.fillMaxSize(),
                 )
             }
         }

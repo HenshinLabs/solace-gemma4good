@@ -27,6 +27,7 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material3.Text
 import androidx.compose.material3.*
+import androidx.compose.material3.MenuAnchorType
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
@@ -48,6 +49,7 @@ fun SettingsScreen(
     onOpenModelManager: () -> Unit = {},
     onOpenImageGen: () -> Unit = {},
     onOpenPerformance: () -> Unit = {},
+    onOpenOllamaExplorer: () -> Unit = {},
     viewModel: SettingsViewModel = hiltViewModel(),
 ) {
     val state = viewModel.uiState.collectAsStateWithLifecycle().value
@@ -246,6 +248,7 @@ fun SettingsScreen(
                             onKeepAliveChanged = { viewModel.onAction(SettingsAction.OllamaKeepAliveChanged(it)) },
                             onSystemPromptChanged = { viewModel.onAction(SettingsAction.OllamaSystemPromptChanged(it)) },
                             onTestConnection = { viewModel.onAction(SettingsAction.TestOllamaConnection) },
+                            onOpenOllamaExplorer = onOpenOllamaExplorer,
                         )
                     }
                 }
@@ -443,7 +446,7 @@ private fun FrequencyDropdown(
             label = { Text("Default image frequency") },
             trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
             modifier = Modifier
-                .menuAnchor()
+                .menuAnchor(MenuAnchorType.PrimaryNotEditable)
                 .fillMaxWidth(),
         )
         ExposedDropdownMenu(
@@ -473,7 +476,12 @@ private fun ThemeSelector(
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        listOf("system" to "System", "light" to "Light", "dark" to "Dark").forEach { (value, label) ->
+        listOf(
+            "system" to "System",
+            "light" to "Light",
+            "dark" to "Dark",
+            "dynamic" to "Dynamic",
+        ).forEach { (value, label) ->
             FilterChip(
                 selected = selected == value,
                 onClick = { onSelect(value) },

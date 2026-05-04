@@ -78,3 +78,20 @@ data class OllamaValidationResult(
     val version: String? = null,
     val error: String? = null
 )
+
+data class OllamaLibraryModel(
+    val name: String,
+    val description: String = "",
+    val pulls: String = "",
+    val tags: List<String> = emptyList(),
+    val lastUpdated: String = "",
+)
+
+data class OllamaLibraryModelDetail(
+    val name: String,
+    val description: String,
+    val tags: List<String>,
+    val sizes: Map<String, Long>,
+    val pulls: Long,
+    val lastUpdated: String,
+)

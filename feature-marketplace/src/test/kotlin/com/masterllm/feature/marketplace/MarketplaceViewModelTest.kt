@@ -442,6 +442,15 @@ class MarketplaceViewModelTest {
 
         override fun getModelStoragePath(): Flow<String> = modelPath
         override suspend fun setModelStoragePath(path: String) { modelPath.value = path }
+
+        override fun getOllamaHost(): Flow<String> = MutableStateFlow("http://localhost:11434")
+        override suspend fun setOllamaHost(host: String) {}
+        override fun getOllamaEnabled(): Flow<Boolean> = MutableStateFlow(false)
+        override suspend fun setOllamaEnabled(enabled: Boolean) {}
+        override fun getOllamaKeepAlive(): Flow<String> = MutableStateFlow("300")
+        override suspend fun setOllamaKeepAlive(keepAlive: String) {}
+        override fun getOllamaSystemPrompt(): Flow<String> = MutableStateFlow("")
+        override suspend fun setOllamaSystemPrompt(prompt: String) {}
     }
 
     private class FakeHuggingFaceApi : HuggingFaceApi {
@@ -477,6 +486,7 @@ class MarketplaceViewModelTest {
             repoId: String,
             fileName: String,
             auth: String?,
+            range: String?,
         ): Response<ResponseBody> {
             lastAuthHeader = auth
             val payload = downloadPayloads[fileName]
