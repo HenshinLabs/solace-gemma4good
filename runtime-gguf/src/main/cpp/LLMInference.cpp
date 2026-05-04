@@ -374,7 +374,7 @@ const auto model_size = double(llama_model_size(this->_model)) / 1024.0 / 1024.0
 const auto model_n_params = double(llama_model_n_params(this->_model)) / 1e9;
 
 std::stringstream result;
-result << std::setprecision(3);
+result << std::fixed << std::setprecision(2);
 result << "| Model | Size | Params | Test | t/s |\n";
 result << "| --- | --- | --- | --- | --- |\n";
 result << "| " << model_desc << " | " << model_size << "GiB | " << model_n_params << "B | pp " << pp << " | " << pp_avg << " ± " << pp_std << " |\n";

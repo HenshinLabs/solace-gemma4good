@@ -668,6 +668,17 @@ class ChatViewModel @Inject constructor(
             }
 
             try {
+                if (pendingImage != null && File(pendingImage).exists()) {
+                    conversationRepository.addMessage(
+                        Message(
+                            id = UUID.randomUUID().toString(),
+                            conversationId = convo.id,
+                            role = MessageRole.SYSTEM,
+                            content = "The user has attached an image. The image path is: $pendingImage. You are a text-only model and cannot process images. Respond acknowledging the image was received.",
+                        ),
+                    )
+                }
+
                 val ready = ensureEngineReady(convo)
                     ?: throw IllegalStateException("Download a GGUF model in Marketplace before chatting.")
 

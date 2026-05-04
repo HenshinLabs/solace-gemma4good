@@ -190,39 +190,10 @@ class OllamaApiService @Inject constructor() {
 
     suspend fun searchLibrary(query: String = ""): Result<List<OllamaLibraryModel>> = withContext(Dispatchers.IO) {
         runCatching {
-            val encodedQuery = java.net.URLEncoder.encode(query.trim(), "UTF-8")
-            val request = Request.Builder()
-                .url("https://ollama.com/api/tags?search=$encodedQuery")
-                .get()
-                .addHeader("Accept", "application/json")
-                .build()
-            val response = getClient().newCall(request).execute()
-            if (response.isSuccessful) {
-                val body = response.body?.string() ?: throw Exception("Empty response")
-                val models = try {
-                    val parsed = gson.fromJson(body, ListModelsResponse::class.java)
-                    parsed.models.map {
-                        OllamaLibraryModel(
-                            name = it.name.substringBefore(":"),
-                            description = it.details?.family ?: "",
-                            pulls = it.size.toString(),
-                            tags = listOf(it.name.substringAfter(":", "latest")),
-                            lastUpdated = it.modified_at ?: "",
-                        )
-                    }.distinctBy { it.name }
-                } catch (e: Exception) {
-                    null
-                }
-                if (models.isNullOrEmpty()) {
-                    filterCuratedLibrary(query)
-                } else {
-                    (filterCuratedLibrary(query) + models).distinctBy { it.name.lowercase() }
-                }
-            } else {
-                filterCuratedLibrary(query)
-            }
-        }.recover {
-            filterCuratedLibrary(query)
+            val trimmed = query.trim()
+            val results = filterCuratedLibrary(trimmed)
+            android.util.Log.i("OllamaApiService", "Using curated library (${results.size} models) for query: '${trimmed}'")
+            results
         }
     }
 
