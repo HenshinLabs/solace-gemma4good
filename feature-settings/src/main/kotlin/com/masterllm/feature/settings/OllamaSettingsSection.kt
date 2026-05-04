@@ -13,6 +13,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.ModelTraining
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -35,6 +36,7 @@ fun OllamaSettingsSection(
     onSystemPromptChanged: (String) -> Unit,
     onTestConnection: () -> Unit,
     onOpenOllamaExplorer: () -> Unit = {},
+    onOpenOllamaServe: () -> Unit = {},
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         SettingSwitchRow(
@@ -177,6 +179,16 @@ fun OllamaSettingsSection(
                 Icon(Icons.Default.ModelTraining, contentDescription = null)
                 Spacer(Modifier.width(8.dp))
                 Text("Browse Ollama Library")
+            }
+
+            Spacer(Modifier.height(8.dp))
+            OutlinedButton(
+                onClick = onOpenOllamaServe,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Icon(Icons.Default.Settings, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
+                Text("Manage Ollama Server")
             }
         }
     }

@@ -50,6 +50,7 @@ object Routes {
     const val PERFORMANCE = "performance"
     const val TASK_TEMPLATES = "task_templates"
     const val OLLAMA_EXPLORER = "ollama_explorer"
+    const val OLLAMA_SERVE = "ollama_serve"
     const val VOICE = "voice"
 }
 
@@ -155,6 +156,7 @@ fun MasterLLMApp(modifier: Modifier = Modifier) {
                     onOpenImageGen = { navController.navigate(Routes.IMAGE_GEN) },
                     onOpenPerformance = { navController.navigate(Routes.PERFORMANCE) },
                     onOpenOllamaExplorer = { navController.navigate(Routes.OLLAMA_EXPLORER) },
+                    onOpenOllamaServe = { navController.navigate(Routes.OLLAMA_SERVE) },
                 )
             }
 
@@ -185,6 +187,12 @@ fun MasterLLMApp(modifier: Modifier = Modifier) {
             }
             composable(Routes.OLLAMA_EXPLORER) {
                 OllamaModelExplorerScreen(
+                    onNavigateBack = { navController.popBackStack() },
+                    modifier = Modifier.fillMaxSize(),
+                )
+            }
+            composable(Routes.OLLAMA_SERVE) {
+                OllamaServeScreen(
                     onNavigateBack = { navController.popBackStack() },
                     modifier = Modifier.fillMaxSize(),
                 )

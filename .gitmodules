@@ -4,3 +4,6 @@
 [submodule "ollama"]
 	path = ollama
 	url = https://github.com/ollama/ollama.git
+[submodule "opencode"]
+	path = opencode
+	url = https://github.com/opencode-ai/opencode.git

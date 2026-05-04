@@ -121,6 +121,7 @@ function(build_library_universal target_name)
         PUBLIC
         -DGGML_USE_CPU
         -O3
+        -ffast-math
     )
 endfunction()
 
@@ -143,6 +144,7 @@ function(build_library_arm64 target_name cpu_flags)
         -DGGML_USE_CPU_AARCH64
         ${cpu_flags}
         -O3
+        -ffast-math
     )
 endfunction()
 

@@ -83,7 +83,7 @@ class SettingsRepositoryImpl @Inject constructor(
     // ─── Thread Count ─────────────────────────────────────────
 
     override fun getDefaultThreadCount(): Flow<Int> =
-        context.dataStore.data.map { it[Keys.DEFAULT_THREAD_COUNT] ?: 4 }
+        context.dataStore.data.map { it[Keys.DEFAULT_THREAD_COUNT] ?: Runtime.getRuntime().availableProcessors() }
 
     override suspend fun setDefaultThreadCount(count: Int) {
         context.dataStore.edit { it[Keys.DEFAULT_THREAD_COUNT] = count }

@@ -12,3 +12,4 @@ local.properties
 *.hprof
 *.log
 .kotlin/
+*.gguf

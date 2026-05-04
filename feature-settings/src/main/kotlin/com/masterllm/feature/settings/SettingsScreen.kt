@@ -50,6 +50,7 @@ fun SettingsScreen(
     onOpenImageGen: () -> Unit = {},
     onOpenPerformance: () -> Unit = {},
     onOpenOllamaExplorer: () -> Unit = {},
+    onOpenOllamaServe: () -> Unit = {},
     viewModel: SettingsViewModel = hiltViewModel(),
 ) {
     val state = viewModel.uiState.collectAsStateWithLifecycle().value
@@ -249,6 +250,7 @@ fun SettingsScreen(
                             onSystemPromptChanged = { viewModel.onAction(SettingsAction.OllamaSystemPromptChanged(it)) },
                             onTestConnection = { viewModel.onAction(SettingsAction.TestOllamaConnection) },
                             onOpenOllamaExplorer = onOpenOllamaExplorer,
+                            onOpenOllamaServe = onOpenOllamaServe,
                         )
                     }
                 }

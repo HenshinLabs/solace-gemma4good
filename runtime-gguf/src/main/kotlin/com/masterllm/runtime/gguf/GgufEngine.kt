@@ -119,15 +119,7 @@ class GgufEngine @Inject constructor(
         fun getLoadedNativeLibraryName(): String = loadedNativeLibrary
 
         fun getOptimalThreadCount(): Int {
-            val total = Runtime.getRuntime().availableProcessors()
-            return when {
-                isKryoCpu() -> maxOf(4, total - 1)
-                isDimensityCpu() -> maxOf(4, total - 2)
-                else -> {
-                    val perfCores = countPerformanceCores()
-                    if (perfCores > 0) maxOf(4, perfCores) else maxOf(4, total - 1)
-                }
-            }
+            return Runtime.getRuntime().availableProcessors()
         }
 
         private fun isKryoCpu(): Boolean {

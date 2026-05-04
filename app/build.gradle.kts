@@ -46,8 +46,8 @@ android {
         applicationId = "com.masterllm.app"
         minSdk = libs.versions.minSdk.get().toInt()
         targetSdk = libs.versions.targetSdk.get().toInt()
-    versionCode = 24
-    versionName = "1.0.24"
+    versionCode = 25
+    versionName = "1.0.25"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
