@@ -575,7 +575,7 @@ class ChatViewModel @Inject constructor(
                             loadedInferenceSignature = _uiState.value.inferenceParams
                         }
 
-                        ggufEngine.benchModel(pp = 512, tg = 128, pl = 0, nr = 1).trim()
+                        ggufEngine.benchModel(pp = 512, tg = 128, pl = 1, nr = 1).trim()
                     }
                 }
 
@@ -615,7 +615,7 @@ class ChatViewModel @Inject constructor(
         if (text.isEmpty()) return
 
         if (_uiState.value.chatBackend == ChatBackend.OLLAMA) {
-            ollamaChat(text)
+            ollamaChat(text, _uiState.value.pendingImageAttachment)
             return
         }
 
@@ -1304,7 +1304,7 @@ class ChatViewModel @Inject constructor(
         }
     }
 
-    private fun ollamaChat(userText: String) {
+    private fun ollamaChat(userText: String, imagePath: String? = null) {
         val convo = _uiState.value.currentConversation
         if (convo == null) {
             _uiState.update { it.copy(error = "Start or select a conversation first") }
@@ -1324,15 +1324,25 @@ class ChatViewModel @Inject constructor(
                     streamingText = "",
                     generationStatus = "Connecting to Ollama...",
                     error = null,
+                    pendingImageAttachment = null,
                 )
             }
 
             try {
+                // Encode attached image as base64 if present
+                val imageBase64 = imagePath?.takeIf { File(it).exists() }?.let { path ->
+                    try {
+                        val bytes = File(path).readBytes()
+                        java.util.Base64.getEncoder().encodeToString(bytes)
+                    } catch (e: Exception) { null }
+                }
+
                 val userMsg = Message(
                     id = UUID.randomUUID().toString(),
                     conversationId = convo.id,
                     role = MessageRole.USER,
                     content = userText,
+                    attachedImagePath = imagePath,
                 )
                 conversationRepository.addMessage(userMsg)
 
@@ -1341,7 +1351,11 @@ class ChatViewModel @Inject constructor(
                 if (systemPrompt.isNotBlank()) {
                     messages.add(com.masterllm.core.ollama.model.ChatMessage(role = "system", content = systemPrompt))
                 }
-                messages.add(com.masterllm.core.ollama.model.ChatMessage(role = "user", content = userText))
+                messages.add(com.masterllm.core.ollama.model.ChatMessage(
+                    role = "user",
+                    content = userText,
+                    images = imageBase64?.let { listOf(it) },
+                ))
 
                 val request = com.masterllm.core.ollama.model.ChatRequest(
                     model = modelName,
@@ -1368,10 +1382,6 @@ class ChatViewModel @Inject constructor(
                     conversationRepository.addMessage(assistantMsg)
                 }
 
-                if (convo.title == "New Conversation") {
-                    val title = userText.take(40) + if (userText.length > 40) "…" else ""
-                    conversationRepository.updateConversation(convo.copy(title = title))
-                }
             } catch (_: CancellationException) {
             } catch (e: Exception) {
                 _uiState.update { it.copy(error = "Ollama error: ${e.message}") }
@@ -1383,6 +1393,11 @@ class ChatViewModel @Inject constructor(
                         generationStatus = null,
                     )
                 }
+            }
+
+            if (convo.title == "New Conversation") {
+                val title = userText.take(40) + if (userText.length > 40) "…" else ""
+                conversationRepository.updateConversation(convo.copy(title = title))
             }
         }
     }

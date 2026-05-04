@@ -78,9 +78,11 @@ private fun ConversationListPane(
     onAction: (ChatAction) -> Unit,
 ) {
     var modelMenuExpanded by remember { mutableStateOf(false) }
+    var ollamaModelExpanded by remember { mutableStateOf(false) }
     val selectedModel = remember(state.selectedModelId, state.availableModels) {
         state.availableModels.firstOrNull { it.id == state.selectedModelId }
     }
+    val isOllamaMode = state.chatBackend == ChatBackend.OLLAMA
 
     Scaffold(
         topBar = {
@@ -88,37 +90,103 @@ private fun ConversationListPane(
                 title = {
                     Column {
                         Text("Chats")
-                        Text(
-                            text = selectedModel?.displayName?.ifBlank { selectedModel.repoId }
-                                ?: "No model selected",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.65f),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                text = if (isOllamaMode) {
+                                    state.ollamaSelectedModel.ifBlank { "Select Ollama model" }
+                                } else {
+                                    selectedModel?.displayName?.ifBlank { selectedModel.repoId }
+                                        ?: "No model selected"
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.65f),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f, fill = false),
+                            )
+                            if (isOllamaMode && state.ollamaSelectedModel.isNotEmpty()) {
+                                Surface(
+                                    shape = RoundedCornerShape(4.dp),
+                                    color = if (state.ollamaConnected) {
+                                        MaterialTheme.colorScheme.primaryContainer
+                                    } else {
+                                        MaterialTheme.colorScheme.errorContainer
+                                    },
+                                    modifier = Modifier.padding(start = 6.dp),
+                                ) {
+                                    Text(
+                                        text = if (state.ollamaConnected) "Connected" else "Disconnected",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = if (state.ollamaConnected) {
+                                            MaterialTheme.colorScheme.onPrimaryContainer
+                                        } else {
+                                            MaterialTheme.colorScheme.onErrorContainer
+                                        },
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                    )
+                                }
+                            }
+                        }
                     }
                 },
                 actions = {
-                    if (state.availableModels.isNotEmpty()) {
-                        IconButton(onClick = { modelMenuExpanded = true }) {
-                            Icon(Icons.Default.ModelTraining, contentDescription = "Select model")
+                    // Backend toggle
+                    FilterChip(
+                        selected = isOllamaMode,
+                        onClick = { onAction(ChatAction.ToggleBackend) },
+                        label = { Text(if (isOllamaMode) "Ollama" else "Local", style = MaterialTheme.typography.labelSmall) },
+                        modifier = Modifier.padding(end = 4.dp),
+                    )
+                    if (isOllamaMode) {
+                        if (state.ollamaModels.isNotEmpty()) {
+                            IconButton(onClick = { ollamaModelExpanded = true }) {
+                                Icon(Icons.Default.Cloud, contentDescription = "Select Ollama model")
+                            }
+                            DropdownMenu(
+                                expanded = ollamaModelExpanded,
+                                onDismissRequest = { ollamaModelExpanded = false },
+                            ) {
+                                state.ollamaModels.forEach { ollamaModel ->
+                                    DropdownMenuItem(
+                                        text = {
+                                            Text("${ollamaModel.name} (${ollamaModel.details?.parameter_size ?: "?"})")
+                                        },
+                                        onClick = {
+                                            onAction(ChatAction.SelectOllamaModel(ollamaModel.name))
+                                            ollamaModelExpanded = false
+                                        },
+                                        leadingIcon = {
+                                            if (state.ollamaSelectedModel == ollamaModel.name) {
+                                                Icon(Icons.Default.Check, contentDescription = null,
+                                                    tint = MaterialTheme.colorScheme.primary)
+                                            }
+                                        },
+                                    )
+                                }
+                            }
                         }
-DropdownMenu(
-expanded = modelMenuExpanded,
-onDismissRequest = { modelMenuExpanded = false },
-) {
-state.availableModels.forEach { model ->
-ModelDropdownItem(
-model = model,
-isSelected = state.selectedModelId == model.id,
-isLoaded = state.modelRuntime.modelId == model.id && state.modelRuntime.status == ModelLoadStatus.LOADED,
-onClick = {
-onAction(ChatAction.SelectModel(model.id))
-modelMenuExpanded = false
-},
-)
-}
-}
+                    } else {
+                        if (state.availableModels.isNotEmpty()) {
+                            IconButton(onClick = { modelMenuExpanded = true }) {
+                                Icon(Icons.Default.ModelTraining, contentDescription = "Select model")
+                            }
+                            DropdownMenu(
+                                expanded = modelMenuExpanded,
+                                onDismissRequest = { modelMenuExpanded = false },
+                            ) {
+                                state.availableModels.forEach { model ->
+                                    ModelDropdownItem(
+                                        model = model,
+                                        isSelected = state.selectedModelId == model.id,
+                                        isLoaded = state.modelRuntime.modelId == model.id && state.modelRuntime.status == ModelLoadStatus.LOADED,
+                                        onClick = {
+                                            onAction(ChatAction.SelectModel(model.id))
+                                            modelMenuExpanded = false
+                                        },
+                                    )
+                                }
+                            }
+                        }
                     }
                     IconButton(onClick = { onAction(ChatAction.NewConversation) }) {
                         Icon(Icons.Default.Add, contentDescription = "New chat")
