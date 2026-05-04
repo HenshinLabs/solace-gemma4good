@@ -46,8 +46,8 @@ android {
         applicationId = "com.masterllm.app"
         minSdk = libs.versions.minSdk.get().toInt()
         targetSdk = libs.versions.targetSdk.get().toInt()
-    versionCode = 25
-    versionName = "1.0.25"
+    versionCode = 26
+    versionName = "1.0.26"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -164,6 +164,9 @@ dependencies {
     implementation(libs.hilt.navigation.compose)
 
     implementation(libs.timber)
+
+    // ONNX Runtime for KittenTTS
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.18.0")
 
     testImplementation(libs.junit5.api)
     testRuntimeOnly(libs.junit5.engine)

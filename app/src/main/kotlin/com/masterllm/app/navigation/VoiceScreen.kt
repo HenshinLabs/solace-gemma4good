@@ -32,10 +32,26 @@ fun VoiceScreen(modifier: Modifier = Modifier) {
     var transcript by remember { mutableStateOf("") }
     var isRecording by remember { mutableStateOf(false) }
     var isProcessing by remember { mutableStateOf(false) }
-    var selectedModel by remember { mutableStateOf("Android Built-in") }
+    var selectedModel by remember { mutableStateOf("KittenTTS (Embedded)") }
     var ttsText by remember { mutableStateOf("") }
     var isSpeaking by remember { mutableStateOf(false) }
     var ttsStatus by remember { mutableStateOf<String?>(null) }
+
+    // KittenTTS engine
+    val kittenTts = remember { mutableStateOf<KittenTtsEngine?>(null) }
+    var kittenReady by remember { mutableStateOf(false) }
+
+    // Initialize KittenTTS
+    LaunchedEffect(Unit) {
+        val engine = KittenTtsEngine(context)
+        kittenReady = engine.initialize()
+        if (kittenReady) {
+            kittenTts.value = engine
+            Log.i(TAG, "KittenTTS ready")
+        } else {
+            Log.e(TAG, "KittenTTS init failed")
+        }
+    }
 
     // TTS engine state
     val ttsEngine = remember { mutableStateOf<TextToSpeech?>(null) }
@@ -58,6 +74,7 @@ fun VoiceScreen(modifier: Modifier = Modifier) {
             tts.stop()
             tts.shutdown()
             ttsEngine.value = null
+            kittenTts.value?.destroy()
         }
     }
 
@@ -146,6 +163,13 @@ fun VoiceScreen(modifier: Modifier = Modifier) {
                                 expanded = expanded,
                                 onDismissRequest = { expanded = false },
                             ) {
+                                DropdownMenuItem(
+                                    text = { Text("KittenTTS (Embedded - 23MB, fastest, offline)") },
+                                    onClick = {
+                                        selectedModel = "KittenTTS (Embedded)"
+                                        expanded = false
+                                    },
+                                )
                                 DropdownMenuItem(
                                     text = { Text("Android Built-in (TTS + STT)") },
                                     onClick = {
@@ -337,39 +361,45 @@ fun VoiceScreen(modifier: Modifier = Modifier) {
                                 Spacer(modifier = Modifier.height(12.dp))
                                 Button(
                                     onClick = {
-                                        val tts = ttsEngine.value
-                                        if (tts == null) {
-                                            ttsStatus = "TTS engine not ready"
-                                            return@Button
-                                        }
                                         if (isSpeaking) {
-                                            tts.stop()
+                                            if (selectedModel == "KittenTTS (Embedded)") {
+                                                kittenTts.value?.stop()
+                                            } else {
+                                                ttsEngine.value?.stop()
+                                            }
                                             isSpeaking = false
                                             ttsStatus = "Stopped"
                                         } else {
-                                            tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-                                                override fun onStart(utteranceId: String?) {
-                                                    isSpeaking = true
-                                                }
-                                                override fun onDone(utteranceId: String?) {
-                                                    isSpeaking = false
-                                                }
-                                                @Deprecated("Deprecated in API")
-                                                override fun onError(utteranceId: String?) {
-                                                    isSpeaking = false
-                                                }
-                                            })
-                                            val result = tts.speak(ttsText, TextToSpeech.QUEUE_FLUSH, null, "tts_utterance")
-                                            if (result == TextToSpeech.SUCCESS) {
-                                                isSpeaking = true
+                                            val useKitten = selectedModel == "KittenTTS (Embedded)" && kittenReady
+                                            if (useKitten) {
                                                 ttsStatus = null
+                                                val success = kittenTts.value?.speak(ttsText) ?: false
+                                                isSpeaking = success
+                                                ttsStatus = if (success) "Speaking..." else "KittenTTS error"
                                             } else {
-                                                ttsStatus = "Failed to start TTS"
+                                                val tts = ttsEngine.value
+                                                if (tts == null) {
+                                                    ttsStatus = "TTS engine not ready"
+                                                    return@Button
+                                                }
+                                                tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                                                    override fun onStart(utteranceId: String?) { isSpeaking = true }
+                                                    override fun onDone(utteranceId: String?) { isSpeaking = false }
+                                                    @Deprecated("Deprecated in API")
+                                                    override fun onError(utteranceId: String?) { isSpeaking = false }
+                                                })
+                                                val result = tts.speak(ttsText, TextToSpeech.QUEUE_FLUSH, null, "tts_utterance")
+                                                if (result == TextToSpeech.SUCCESS) {
+                                                    isSpeaking = true
+                                                    ttsStatus = null
+                                                } else {
+                                                    ttsStatus = "Failed to start TTS"
+                                                }
                                             }
                                         }
                                     },
                                     modifier = Modifier.fillMaxWidth(),
-                                    enabled = ttsText.isNotBlank() && ttsEngine.value != null,
+                                    enabled = ttsText.isNotBlank() && (ttsEngine.value != null || (selectedModel == "KittenTTS (Embedded)" && kittenReady)),
                                 ) {
                                     Icon(
                                         if (isSpeaking) Icons.Default.Stop else Icons.Default.VolumeUp,
@@ -401,22 +431,22 @@ fun VoiceScreen(modifier: Modifier = Modifier) {
                                 )
                                 Spacer(modifier = Modifier.height(8.dp))
                                 Text(
+                                    text = "KittenTTS (Embedded): Neural TTS model (23MB) runs fully offline. Fastest option.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
                                     text = "Speech-to-Text (ASR): Uses Android's built-in speech recognition. Requires network for best results.",
                                     style = MaterialTheme.typography.bodySmall,
                                 )
                                 Spacer(modifier = Modifier.height(4.dp))
                                 Text(
-                                    text = "Text-to-Speech (TTS): Uses Android's built-in TTS engine. Works fully offline.",
+                                    text = "Text-to-Speech (TTS): Android built-in TTS works offline. KittenTTS is neural and faster.",
                                     style = MaterialTheme.typography.bodySmall,
                                 )
                                 Spacer(modifier = Modifier.height(4.dp))
                                 Text(
-                                    text = "For higher accuracy, download dedicated models (Whisper, Wav2Vec2) from the Explore tab.",
-                                    style = MaterialTheme.typography.bodySmall,
-                                )
-                                Spacer(modifier = Modifier.height(4.dp))
-                                Text(
-                                    text = "Download voice models from the Explore tab (filter by 'automatic-speech-recognition' or 'text-to-speech')",
+                                    text = "Download additional ASR models (Whisper, Wav2Vec2) from the Explore tab.",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.primary,
                                 )
