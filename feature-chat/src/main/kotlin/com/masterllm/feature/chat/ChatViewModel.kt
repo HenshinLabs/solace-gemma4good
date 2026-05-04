@@ -7,6 +7,7 @@ import androidx.lifecycle.viewModelScope
 import com.masterllm.core.domain.model.*
 import com.masterllm.core.domain.repository.ConversationRepository
 import com.masterllm.core.domain.repository.ModelRepository
+import com.masterllm.core.data.BundledModelManager
 import com.masterllm.core.domain.repository.SettingsRepository
 import com.masterllm.core.ollama.api.OllamaApiService
 import com.masterllm.core.ollama.model.OllamaModelInfo
@@ -217,14 +218,20 @@ class ChatViewModel @Inject constructor(
                                     it.format == ModelFormat.SAFETENSORS ||
                                     it.format == ModelFormat.DIFFUSERS
                                 )
+                    }.toMutableList()
+                    val bundled = getBundledModel()
+                    if (bundled != null && filtered.none { it.id == bundled.id }) {
+                        filtered.add(0, bundled)
                     }
                     var selectedModelId: String? = null
                     _uiState.update { state ->
-                        val selected = state.selectedModelId?.takeIf { selectedId ->
-                            filtered.any { it.id == selectedId }
-                        } ?: filtered.firstOrNull { it.format == ModelFormat.GGUF }?.id
-                        ?: filtered.firstOrNull { it.format == ModelFormat.SAFETENSORS }?.id
-                        ?: filtered.firstOrNull()?.id
+                        val keepSelected = state.selectedModelId?.let { id ->
+                            filtered.firstOrNull { it.id == id }
+                        }
+                        val selected = keepSelected?.id
+                            ?: filtered.firstOrNull { it.format == ModelFormat.GGUF }?.id
+                            ?: filtered.firstOrNull { it.format == ModelFormat.SAFETENSORS }?.id
+                            ?: filtered.firstOrNull()?.id
                         selectedModelId = selected
                         state.copy(
                             availableModels = filtered,
@@ -1298,6 +1305,21 @@ class ChatViewModel @Inject constructor(
                 }
             }
         }
+    }
+
+    private fun getBundledModel(): LlmModel? {
+        val info = BundledModelManager.initialize(appContext) ?: return null
+        return LlmModel(
+            id = info.id,
+            repoId = "bundled/qwen3.5-0.8b",
+            fileName = "Qwen3.5-0.8B-Q4_K_M.gguf",
+            displayName = info.displayName,
+            format = ModelFormat.GGUF,
+            sizeBytes = java.io.File(info.localPath).length(),
+            downloadState = DownloadState.DOWNLOADED,
+            localPath = info.localPath,
+            quantization = "Q4_K_M",
+        )
     }
 
     private fun selectOllamaModel(modelName: String) {

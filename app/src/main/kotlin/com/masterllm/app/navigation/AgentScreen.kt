@@ -14,7 +14,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import com.masterllm.app.BundledModelManager
+import com.masterllm.core.data.BundledModelManager
 import com.masterllm.runtime.gguf.GgufEngine
 import com.masterllm.runtime.gguf.PerformanceUsageSampler
 import kotlinx.coroutines.Dispatchers

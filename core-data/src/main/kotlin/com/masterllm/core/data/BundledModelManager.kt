@@ -1,18 +1,18 @@
-package com.masterllm.app
+package com.masterllm.core.data
 
 import android.content.Context
 import android.util.Log
-import com.masterllm.runtime.gguf.GgufEngine
 import java.io.File
 
 object BundledModelManager {
     private const val TAG = "BundledModelManager"
     private const val MODEL_ASSET_PATH = "models/Qwen3.5-0.8B-Q4_K_M.gguf"
-    private const val MODEL_DISPLAY_NAME = "Qwen3.5-0.8B (Bundled)"
-    private const val MODEL_ID = "bundled_qwen3.5_0.8b"
+    const val MODEL_DISPLAY_NAME = "Qwen3.5-0.8B (Bundled)"
+    const val MODEL_ID = "bundled_qwen3.5_0.8b"
     const val ARCHITECTURE = "qwen35"
     const val CONTEXT_LENGTH = 262144
     const val EOS_TOKEN = "<|im_end|>"
+    const val QWEN35_CHAT_TEMPLATE = "{% if not messages %}{{ raise_exception('No messages provided.') }}{% endif %}{% if messages[0]['role'] == 'system' %}{{ '<|im_start|>system\\n' + messages[0]['content'] + '<|im_end|>\\n' }}{% endif %}{% for message in messages %}{% if message['role'] == 'system' %}{% if not loop.first %}{{ raise_exception('System message must be at the beginning.') }}{% endif %}{% elif message['role'] == 'user' %}{{ '<|im_start|>user\\n' + message['content'] + '<|im_end|>\\n' }}{% elif message['role'] == 'assistant' %}{{ '<|im_start|>assistant\\n' + message['content'] + '<|im_end|>\\n' }}{% endif %}{% endfor %}{% if add_generation_prompt %}{{ '<|im_start|>assistant\\n<think>\\n\\n</think>\\n\\n' }}{% endif %}"
 
     data class BundledModelInfo(
         val id: String,
@@ -76,13 +76,13 @@ object BundledModelManager {
         "repeatPenalty" to 1.0f,
         "contextSize" to 8192,
         "maxTokens" to 4096,
-        "numThreads" to GgufEngine.getAllThreadCount(),
+        "numThreads" to Runtime.getRuntime().availableProcessors(),
         "nGpuLayers" to 99,
-        "nBatch" to GgufEngine.getPerformanceBatchSize(),
-        "nUbatch" to GgufEngine.getPerformanceUbatchSize(),
+        "nBatch" to 256,
+        "nUbatch" to 128,
         "useMmap" to true,
         "useMlock" to false,
-        "chatTemplate" to GgufEngine.QWEN35_CHAT_TEMPLATE,
+        "chatTemplate" to QWEN35_CHAT_TEMPLATE,
         "agentMode" to true,
     )
 

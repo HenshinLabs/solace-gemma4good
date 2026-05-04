@@ -1,6 +1,7 @@
 package com.masterllm.app
 
 import android.app.Application
+import com.masterllm.core.data.BundledModelManager
 import dagger.hilt.android.HiltAndroidApp
 import timber.log.Timber
 
@@ -11,5 +12,6 @@ class MasterLLMApplication : Application() {
         if (BuildConfig.DEBUG) {
             Timber.plant(Timber.DebugTree())
         }
+        BundledModelManager.initialize(this)
     }
 }

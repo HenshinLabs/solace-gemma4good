@@ -1,7 +1,10 @@
 package com.masterllm.app.navigation
 
+import android.Manifest
 import android.app.Activity
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
@@ -9,6 +12,7 @@ import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.util.Log
+import androidx.core.content.ContextCompat
 import kotlinx.coroutines.launch
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -99,6 +103,15 @@ fun VoiceScreen(modifier: Modifier = Modifier) {
 
     // Coroutine scope for asynchronous operations
     val scope = rememberCoroutineScope()
+
+    // Permission state
+    var hasMicPermission by remember { mutableStateOf(
+        ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+    ) }
+    val permissionLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        contract = androidx.activity.result.contract.ActivityResultContracts.RequestPermission(),
+        onResult = { granted -> hasMicPermission = granted }
+    )
 
     // Speech recognizer state
     val speechRecognizer = remember {
@@ -248,10 +261,14 @@ fun VoiceScreen(modifier: Modifier = Modifier) {
                                         if (isRecording) {
                                             speechRecognizer?.stopListening()
                                             isRecording = false
-                                            isProcessing = true
+                                            isProcessing = false
                                         } else {
-                                            if (speechRecognizer != null) {
-                                                transcript = ""
+                                            transcript = ""
+                                            isProcessing = false
+                                            if (!hasMicPermission) {
+                                                permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                                                transcript = "Microphone permission required for speech recognition."
+                                            } else if (speechRecognizer != null) {
                                                 val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
                                                     putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
                                                     putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault())
@@ -275,12 +292,16 @@ fun VoiceScreen(modifier: Modifier = Modifier) {
                                                         Log.e(TAG, "Speech recognition error: $error")
                                                         isRecording = false
                                                         isProcessing = false
-                                                        transcript = when (error) {
-                                                            SpeechRecognizer.ERROR_NO_MATCH -> "No speech recognized. Try again."
-                                                            SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "Speech timeout. Try again."
-                                                            SpeechRecognizer.ERROR_AUDIO -> "Audio recording error."
-                                                            SpeechRecognizer.ERROR_NETWORK, SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "Network error. Speech recognition requires network."
-                                                            else -> "Recognition error (code: $error)"
+                                                        if (error == SpeechRecognizer.ERROR_CLIENT) {
+                                                            transcript = "Speech recognition service unavailable on this device/emulator."
+                                                        } else {
+                                                            transcript = when (error) {
+                                                                SpeechRecognizer.ERROR_NO_MATCH -> "No speech recognized. Try again."
+                                                                SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "Speech timeout. Try again."
+                                                                SpeechRecognizer.ERROR_AUDIO -> "Audio recording error."
+                                                                SpeechRecognizer.ERROR_NETWORK, SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "Network error."
+                                                                else -> "Recognition error (code: $error)"
+                                                            }
                                                         }
                                                     }
                                                     override fun onResults(results: Bundle?) {
@@ -296,10 +317,15 @@ fun VoiceScreen(modifier: Modifier = Modifier) {
                                                     }
                                                     override fun onEvent(eventType: Int, params: Bundle?) {}
                                                 })
-                                                speechRecognizer.startListening(intent)
-                                                isRecording = true
+                                                try {
+                                                    speechRecognizer.startListening(intent)
+                                                    isRecording = true
+                                                } catch (e: Exception) {
+                                                    transcript = "Failed to start speech recognition: ${e.message}"
+                                                    isProcessing = false
+                                                }
                                             } else {
-                                                transcript = "Speech recognition not available on this device."
+                                                transcript = "Speech recognition not available on this device/emulator."
                                             }
                                         }
                                     },

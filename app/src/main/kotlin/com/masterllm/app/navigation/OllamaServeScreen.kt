@@ -101,12 +101,23 @@ class OllamaServeViewModel @Inject constructor() : ViewModel() {
         val currentState = _state.value
         if (currentState.isRunning || currentState.isStarting) return
 
+        val binaryPath = resolveOllamaBinary(currentState.ollamaPath)
+        if (binaryPath == null) {
+            _state.update {
+                it.copy(
+                    isStarting = false,
+                    error = "Ollama binary not found. Install ollama on device or check path. Searched: ${searchOllamaPaths().joinToString(", ")}"
+                )
+            }
+            return
+        }
+
         _state.update { it.copy(isStarting = true, error = null) }
 
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val processBuilder = ProcessBuilder(
-                    currentState.ollamaPath, "serve"
+                    binaryPath, "serve"
                 )
                 processBuilder.environment()["OLLAMA_HOST"] = "0.0.0.0:${currentState.port}"
                 processBuilder.redirectErrorStream(true)
@@ -193,6 +204,28 @@ class OllamaServeViewModel @Inject constructor() : ViewModel() {
 
     fun clearLogs() {
         _state.update { it.copy(logs = emptyList()) }
+    }
+
+    private fun searchOllamaPaths(): List<String> {
+        val candidates = listOf(
+            "/data/data/com.masterllm.app/files/ollama/ollama",
+            "/data/local/tmp/ollama",
+            "/system/bin/ollama",
+            "/system/xbin/ollama",
+            "/vendor/bin/ollama",
+        )
+        return listOf(_state.value.ollamaPath) + candidates
+    }
+
+    private fun resolveOllamaBinary(path: String): String? {
+        return searchOllamaPaths().firstOrNull { p ->
+            try {
+                val f = java.io.File(p)
+                f.exists() && f.canExecute()
+            } catch (_: Exception) {
+                false
+            }
+        }
     }
 
     fun checkServerStatus() {
