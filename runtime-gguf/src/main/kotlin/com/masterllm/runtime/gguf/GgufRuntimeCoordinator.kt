@@ -3,6 +3,7 @@ package com.masterllm.runtime.gguf
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /**
  * Coordinates access to the singleton GGUF runtime across features.
@@ -12,5 +13,7 @@ import kotlinx.coroutines.sync.Mutex
  */
 @Singleton
 class GgufRuntimeCoordinator @Inject constructor() {
-    val engineMutex: Mutex = Mutex()
+    private val engineMutex = Mutex()
+
+    suspend fun <T> withEngineLock(action: suspend () -> T): T = engineMutex.withLock { action() }
 }

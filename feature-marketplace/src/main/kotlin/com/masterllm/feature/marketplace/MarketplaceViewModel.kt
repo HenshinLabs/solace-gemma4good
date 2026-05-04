@@ -784,24 +784,25 @@ class MarketplaceViewModel @Inject constructor(
         }
     }
 
+    private val downloadLocks = mutableSetOf<String>()
+
     private fun downloadModel(modelInfo: HfModelInfo, file: HfModelFile) {
         val downloadKey = "${modelInfo.modelId}/${file.rfilename}"
+        if (!downloadLocks.add(downloadKey)) return
+
+        startDownloadTelemetry(
+            downloadKey = downloadKey,
+            modelId = modelInfo.modelId,
+            fileName = file.rfilename,
+            plannedFiles = listOf(file.rfilename),
+            totalFiles = 1,
+        )
+
         viewModelScope.launch {
-            if (_uiState.value.isDownloading.containsKey(downloadKey)) return@launch
-
-            startDownloadTelemetry(
-                downloadKey = downloadKey,
-                modelId = modelInfo.modelId,
-                fileName = file.rfilename,
-                plannedFiles = listOf(file.rfilename),
-                totalFiles = 1,
-            )
-
             var localTargetFile: File? = null
             var persistedModelId: String? = null
 
             try {
-                // Determine quantization from filename
                 val quant = extractQuantization(file.rfilename)
                 val paramCount = extractParamCount(modelInfo.modelId)
                 val format = detectDownloadFormat(modelInfo, file)
@@ -890,10 +891,9 @@ class MarketplaceViewModel @Inject constructor(
                 }
 
                 if (requestRange != null && response.code() == 200) {
-                    // Server ignored range; restart cleanly from byte 0.
-                    targetFile.delete()
                     resumeOffsetBytes = 0L
                     requestRange = null
+                    targetFile.writeBytes(ByteArray(0))
                     response = huggingFaceApi.downloadFile(
                         repoId = modelInfo.modelId,
                         fileName = file.rfilename,
@@ -954,6 +954,7 @@ class MarketplaceViewModel @Inject constructor(
                 }
             } finally {
                 finishDownloadTelemetry(downloadKey)
+                downloadLocks.remove(downloadKey)
             }
         }
     }

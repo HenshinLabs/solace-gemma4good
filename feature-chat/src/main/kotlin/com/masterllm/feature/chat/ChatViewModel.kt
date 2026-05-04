@@ -175,7 +175,7 @@ class ChatViewModel @Inject constructor(
     private var loadedInferenceSignature: InferenceParams? = null
     private var loadedImageModelId: String? = null
     private var gpuAccelerationEnabled: Boolean = false
-    private val engineMutex = runtimeCoordinator.engineMutex
+
 
     init {
         // Watch chat conversations (independent)
@@ -331,7 +331,7 @@ class ChatViewModel @Inject constructor(
 
             // Close current model so next generation loads the new one
             if (loadedModelId != null && loadedModelId != modelId) {
-                engineMutex.withLock {
+                runtimeCoordinator.withEngineLock {
                     ggufEngine.close()
                     loadedModelId = null
                     loadedInferenceSignature = null
@@ -376,7 +376,7 @@ class ChatViewModel @Inject constructor(
             }
 
             try {
-                val loadDurationMs = engineMutex.withLock {
+                val loadDurationMs = runtimeCoordinator.withEngineLock {
                     when (model.format) {
                         ModelFormat.GGUF -> {
                             val startedAt = System.nanoTime()
@@ -558,7 +558,7 @@ class ChatViewModel @Inject constructor(
 
             try {
                 val benchmarkResult = withContext(Dispatchers.Default) {
-                    engineMutex.withLock {
+                    runtimeCoordinator.withEngineLock {
                         if (
                             !ggufEngine.isModelLoaded() ||
                                 loadedModelId != selectedModel.id ||
@@ -698,9 +698,7 @@ class ChatViewModel @Inject constructor(
                 _uiState.update { it.copy(generationStatus = "Processing prompt...") }
 
                 val builder = StringBuilder()
-                val promptTokens = engineMutex.withLock {
-                    ggufEngine.getContextLengthUsed()
-                }
+                var promptTokens = 0
                 val generationStartSnapshot = PerformanceUsageSampler.captureSnapshot()
                 val startedAtNs = System.nanoTime()
                 var firstTokenAtNs: Long? = null
@@ -708,7 +706,11 @@ class ChatViewModel @Inject constructor(
                 var streamError: Throwable? = null
 
                 try {
-                    engineMutex.withLock {
+                    runtimeCoordinator.withEngineLock {
+                        if (!ggufEngine.isModelLoaded() || loadedModelId != targetModelId) {
+                            ensureEngineReadyInternal(convo)
+                        }
+                        promptTokens = ggufEngine.getContextLengthUsed()
                         ggufEngine.getResponseAsFlow(
                             text,
                             maxTokens = _uiState.value.inferenceParams.maxTokens,
@@ -765,7 +767,7 @@ class ChatViewModel @Inject constructor(
                 var nativePromptSpeed = 0f
                 var activeThreads = _uiState.value.inferenceParams.numThreads
                 var activeGpuLayers = resolveDesiredGpuLayers()
-                engineMutex.withLock {
+                runtimeCoordinator.withEngineLock {
                     generatedTokens = (ggufEngine.getContextLengthUsed() - promptTokens).coerceAtLeast(0)
                     nativeSpeed = ggufEngine.getResponseGenerationSpeed()
                     nativePromptSpeed = ggufEngine.getPromptProcessingSpeed()
@@ -985,11 +987,11 @@ class ChatViewModel @Inject constructor(
 
     private suspend fun cancelGenerationIfRunning() {
         val job = generationJob ?: return
-        _uiState.update { it.copy(isGenerating = false, generationStatus = null) }
         job.cancelAndJoin()
         if (generationJob === job) {
             generationJob = null
         }
+        _uiState.update { it.copy(isGenerating = false, generationStatus = null) }
     }
 
     private suspend fun createNewConversation(): Conversation {
@@ -1055,7 +1057,11 @@ class ChatViewModel @Inject constructor(
         }
     }
 
-    private suspend fun ensureEngineReady(conversation: Conversation): EngineReadyResult? = engineMutex.withLock {
+    private suspend fun ensureEngineReady(conversation: Conversation): EngineReadyResult? = runtimeCoordinator.withEngineLock {
+        ensureEngineReadyInternal(conversation)
+    }
+
+    private suspend fun ensureEngineReadyInternal(conversation: Conversation): EngineReadyResult? {
         val inferenceParams = _uiState.value.inferenceParams
         val modelId = _uiState.value.selectedModelId
             ?: conversation.modelId.takeIf { it.isNotBlank() }

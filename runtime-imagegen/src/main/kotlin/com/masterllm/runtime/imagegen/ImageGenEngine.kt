@@ -138,12 +138,11 @@ class ImageGenEngine @Inject constructor(
     }
 
     /**
-     * Generate an image from a text prompt using actual model weights.
+     * Generate an image from a text prompt using model weight statistics.
      *
-     * This implementation performs a simplified diffusion process that:
-     * 1. Loads key weight tensors from the model
-     * 2. Uses them to seed and guide the latent space
-     * 3. Performs real matrix operations for denoising
+     * EXPERIMENTAL: This is a simplified pipeline that uses weight tensor
+     * statistics to seed and guide random noise generation. Full UNet + VAE
+     * diffusion is not yet implemented. Output is noise-based.
      *
      * @param prompt Positive prompt
      * @param negativePrompt Negative prompt
@@ -174,6 +173,10 @@ class ImageGenEngine @Inject constructor(
         val workerCount = Runtime.getRuntime().availableProcessors().coerceAtLeast(2)
         val effectiveSeed = if (seed >= 0L) seed else deriveSeed(prompt, negativePrompt)
 
+        Timber.w(
+            "ImageGenEngine: EXPERIMENTAL — simplified noise-based pipeline. " +
+                "Full UNet+VAE not yet implemented. Results are weight-guided noise, not real diffusion."
+        )
         Timber.d(
             "ImageGenEngine: Generating with backend=${model.backend}, steps=$normalizedSteps, " +
                 "cfg=$cfgScale, ${normalizedWidth}x$normalizedHeight, threads=$workerCount, " +

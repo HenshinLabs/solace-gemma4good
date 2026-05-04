@@ -114,12 +114,38 @@ class GgufEngine @Inject constructor(
             Build.SUPPORTED_ABIS[0]?.equals("arm64-v8a") == true
 
         const val DEFAULT_CONTEXT_SIZE: Long = 1024L
+        const val DEFAULT_MAX_TOKENS = 4096
         const val DEFAULT_CHAT_TEMPLATE = "{% for message in messages %}{% if loop.first and messages[0]['role'] != 'system' %}{{ '<|im_start|>system\\nYou are a helpful AI assistant.\\n<|im_end|>\\n' }}{% endif %}{{'<|im_start|>' + message['role'] + '\\n' + message['content'] + '<|im_end|>\\n'}}{% endfor %}{% if add_generation_prompt %}{{ '<|im_start|>assistant\\n' }}{% endif %}"
+        const val QWEN35_CHAT_TEMPLATE = "{% if not messages %}{{ raise_exception('No messages provided.') }}{% endif %}{% if messages[0]['role'] == 'system' %}{{ '<|im_start|>system\\n' + messages[0]['content'] + '<|im_end|>\\n' }}{% endif %}{% for message in messages %}{% if message['role'] == 'system' %}{% if not loop.first %}{{ raise_exception('System message must be at the beginning.') }}{% endif %}{% elif message['role'] == 'user' %}{{ '<|im_start|>user\\n' + message['content'] + '<|im_end|>\\n' }}{% elif message['role'] == 'assistant' %}{{ '<|im_start|>assistant\\n' + message['content'] + '<|im_end|>\\n' }}{% endif %}{% endfor %}{% if add_generation_prompt %}{{ '<|im_start|>assistant\\n<think>\\n\\n</think>\\n\\n' }}{% endif %}"
 
         fun getLoadedNativeLibraryName(): String = loadedNativeLibrary
 
         fun getOptimalThreadCount(): Int {
-            return Runtime.getRuntime().availableProcessors()
+            val totalCores = Runtime.getRuntime().availableProcessors()
+            val perfCores = countPerformanceCores()
+            return if (perfCores > 0) perfCores else totalCores.coerceAtMost(8)
+        }
+
+        fun getAllThreadCount(): Int {
+            return Runtime.getRuntime().availableProcessors().coerceAtMost(8)
+        }
+
+        fun getPerformanceBatchSize(): Int {
+            val threads = getOptimalThreadCount()
+            return when {
+                threads >= 8 -> 512
+                threads >= 4 -> 256
+                else -> 128
+            }
+        }
+
+        fun getPerformanceUbatchSize(): Int {
+            val threads = getOptimalThreadCount()
+            return when {
+                threads >= 8 -> 256
+                threads >= 4 -> 128
+                else -> 64
+            }
         }
 
         private fun isKryoCpu(): Boolean {
@@ -227,7 +253,9 @@ class GgufEngine @Inject constructor(
         }
     }
     
+    @Volatile
     private var nativePtr = 0L
+    @Volatile
     private var isLoaded = false
     private val nativeOpsMutex = Mutex()
 
@@ -237,6 +265,10 @@ class GgufEngine @Inject constructor(
     private var generationStartTime = 0L
     @Volatile
     private var generationEndTime = 0L
+    @Volatile
+    private var generationActive = false
+    @Volatile
+    private var closeRequested = false
 
     fun getLiveTokensPerSecond(): Float {
         val generated = tokensGenerated
@@ -282,6 +314,7 @@ ggufReader.load(modelPath)
 
 val modelContextSize = ggufReader.getContextSize() ?: DEFAULT_CONTEXT_SIZE
 val modelChatTemplate = ggufReader.getChatTemplate() ?: DEFAULT_CHAT_TEMPLATE
+ggufReader.close()
 val actualContextSize = params.contextSize?.toLong()?.coerceAtLeast(512L) ?: modelContextSize
 val actualChatTemplate = params.chatTemplate?.takeIf { it.isNotBlank() } ?: modelChatTemplate
 val resolvedGpuLayers = if (gpuAccelerationEnabled) {
@@ -291,16 +324,16 @@ val resolvedGpuLayers = if (gpuAccelerationEnabled) {
 }
 
         val autoThreads = if (params.numThreads <= 0) {
-            getOptimalThreadCount()
+            getAllThreadCount()
         } else {
             params.numThreads
         }
 
-val actualNBatch = if (params.nBatch > 0) params.nBatch else actualContextSize.toInt()
-val actualNUbatch = if (params.nUbatch > 0) params.nUbatch else minOf(actualNBatch, 512)
+val actualNBatch = if (params.nBatch > 0) params.nBatch else getPerformanceBatchSize()
+val actualNUbatch = if (params.nUbatch > 0) params.nUbatch else getPerformanceUbatchSize()
 
 if (nativePtr != 0L) {
-close(nativePtr)
+closeNative(nativePtr)
 nativePtr = 0L
 isLoaded = false
 }
@@ -409,33 +442,37 @@ throw IllegalStateException("Failed to load model")
      */
     fun getResponseAsFlow(
         query: String,
-        maxTokens: Int = Int.MAX_VALUE,
+        maxTokens: Int = DEFAULT_MAX_TOKENS,
     ): Flow<String> = flow {
         val budget = maxTokens.coerceAtLeast(1)
-        nativeOpsMutex.withLock {
-            val handle = verifyHandle()
-            startCompletion(handle, query)
+        closeRequested = false
+        generationActive = true
+        val handle = verifyHandle()
+        startCompletion(handle, query)
 
-            tokensGenerated = 0
-            generationStartTime = System.nanoTime()
-            generationEndTime = 0L
+        tokensGenerated = 0
+        generationStartTime = System.nanoTime()
+        generationEndTime = 0L
 
-            var emittedTokens = 0
-            try {
-                while (currentCoroutineContext().isActive && emittedTokens < budget) {
-                    val piece = completionLoop(handle)
-                    when (piece) {
-                        "[EOG]", "[STOP]", "[ERROR]" -> break
-                        else -> if (piece.isNotEmpty()) {
-                            emit(piece)
-                            emittedTokens += 1
-                            tokensGenerated = emittedTokens
-                        }
+        var emittedTokens = 0
+        try {
+            while (currentCoroutineContext().isActive && emittedTokens < budget && !closeRequested) {
+                val piece = completionLoop(handle)
+                when (piece) {
+                    "[EOG]", "[STOP]", "[ERROR]" -> break
+                    else -> if (piece.isNotEmpty()) {
+                        emit(piece)
+                        emittedTokens += 1
+                        tokensGenerated = emittedTokens
                     }
                 }
-            } finally {
-                generationEndTime = System.nanoTime()
-                stopCompletion(handle)
+            }
+        } finally {
+            generationActive = false
+            generationEndTime = System.nanoTime()
+            stopCompletion(handle)
+            if (closeRequested) {
+                freeNativeModel()
             }
         }
     }.flowOn(Dispatchers.Default)
@@ -449,41 +486,45 @@ throw IllegalStateException("Failed to load model")
      */
     suspend fun getResponse(
         query: String,
-        maxTokens: Int = Int.MAX_VALUE,
+        maxTokens: Int = DEFAULT_MAX_TOKENS,
     ): String {
         val budget = maxTokens.coerceAtLeast(1)
-        return nativeOpsMutex.withLock {
-            val handle = verifyHandle()
-            startCompletion(handle, query)
+        closeRequested = false
+        generationActive = true
+        val handle = verifyHandle()
+        startCompletion(handle, query)
 
-            tokensGenerated = 0
-            generationStartTime = System.nanoTime()
-            generationEndTime = 0L
+        tokensGenerated = 0
+        generationStartTime = System.nanoTime()
+        generationEndTime = 0L
 
-            val response = StringBuilder()
-            var emittedTokens = 0
+        val response = StringBuilder()
+        var emittedTokens = 0
 
-            try {
-                var piece = completionLoop(handle)
+        try {
+            var piece = completionLoop(handle)
 
-                while (
-                    emittedTokens < budget &&
-                        piece != "[EOG]" &&
-                        piece != "[STOP]" &&
-                        piece != "[ERROR]"
-                ) {
-                    response.append(piece)
-                    emittedTokens += 1
-                    tokensGenerated = emittedTokens
-                    piece = completionLoop(handle)
-                }
-            } finally {
-                generationEndTime = System.nanoTime()
-                stopCompletion(handle)
+            while (
+                emittedTokens < budget &&
+                    piece != "[EOG]" &&
+                    piece != "[STOP]" &&
+                    piece != "[ERROR]"
+            ) {
+                response.append(piece)
+                emittedTokens += 1
+                tokensGenerated = emittedTokens
+                piece = completionLoop(handle)
             }
-
-            response.toString()
+        } finally {
+            generationActive = false
+            generationEndTime = System.nanoTime()
+            stopCompletion(handle)
+            if (closeRequested) {
+                freeNativeModel()
+            }
         }
+
+        return response.toString()
     }
     
     /**
@@ -500,17 +541,22 @@ throw IllegalStateException("Failed to load model")
         return benchModel(nativePtr, pp, tg, pl, nr)
     }
     
+    private fun freeNativeModel(): Unit {
+        if (nativePtr != 0L) {
+            closeNative(nativePtr)
+            nativePtr = 0L
+            isLoaded = false
+        }
+        closeRequested = false
+    }
+
     /**
      * Unloads the model and releases resources.
      */
     suspend fun close() {
-        nativeOpsMutex.withLock {
-            if (nativePtr != 0L) {
-                close(nativePtr)
-                nativePtr = 0L
-                isLoaded = false
-            }
-        }
+        closeRequested = true
+        if (generationActive) return
+        freeNativeModel()
     }
     
     /**
@@ -556,7 +602,7 @@ nUbatch: Int,
     private external fun getConfiguredThreadCount(modelPtr: Long): Int
     private external fun getConfiguredGpuLayers(modelPtr: Long): Int
     private external fun getContextSizeUsed(modelPtr: Long): Int
-    private external fun close(modelPtr: Long)
+    private external fun closeNative(modelPtr: Long)
     private external fun startCompletion(modelPtr: Long, prompt: String)
     private external fun completionLoop(modelPtr: Long): String
     private external fun stopCompletion(modelPtr: Long)

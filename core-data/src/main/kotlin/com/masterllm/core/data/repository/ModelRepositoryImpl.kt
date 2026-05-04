@@ -6,6 +6,7 @@ import com.masterllm.core.domain.model.*
 import com.masterllm.core.domain.repository.ModelRepository
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import java.io.File
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -20,8 +21,13 @@ class ModelRepositoryImpl @Inject constructor(
     override suspend fun getModelById(id: String): LlmModel? =
         modelDao.getById(id)?.toDomain()
 
-    override suspend fun deleteModel(id: String) =
+    override suspend fun deleteModel(id: String) {
+        val model = modelDao.getById(id)
+        if (model != null && model.localPath != null) {
+            runCatching { File(model.localPath).delete() }
+        }
         modelDao.deleteById(id)
+    }
 
     override suspend fun saveModel(model: LlmModel) =
         modelDao.insert(model.toEntity())

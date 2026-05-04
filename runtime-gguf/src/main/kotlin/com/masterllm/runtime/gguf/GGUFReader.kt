@@ -13,7 +13,17 @@ internal class GGUFReader {
     private var nativeHandle: Long = 0L
 
     suspend fun load(modelPath: String) = withContext(Dispatchers.IO) {
+        if (nativeHandle != 0L) {
+            runCatching { closeNativeHandle(nativeHandle) }
+        }
         nativeHandle = getGGUFContextNativeHandle(modelPath)
+    }
+
+    fun close() {
+        if (nativeHandle != 0L) {
+            runCatching { closeNativeHandle(nativeHandle) }
+            nativeHandle = 0L
+        }
     }
 
     fun getContextSize(): Long? {
@@ -35,4 +45,5 @@ internal class GGUFReader {
     private external fun getGGUFContextNativeHandle(modelPath: String): Long
     private external fun getContextSize(nativeHandle: Long): Long
     private external fun getChatTemplate(nativeHandle: Long): String
+    private external fun closeNativeHandle(nativeHandle: Long)
 }

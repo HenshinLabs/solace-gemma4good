@@ -219,20 +219,37 @@ class KittenTtsEngine @Inject constructor() {
 
         private fun parseNpyFloats(data: ByteArray): FloatArray {
             return try {
-                val headerLen = java.nio.ByteBuffer.wrap(data, 8, 4).order(java.nio.ByteOrder.LITTLE_ENDIAN).int
-                val header = String(data, 12, headerLen - 8, Charsets.US_ASCII)
+                val version = data.getOrNull(7) ?: return FloatArray(0)
+                val headerLen = if (version <= 1) {
+                    java.nio.ByteBuffer.wrap(data, 8, 2).order(java.nio.ByteOrder.LITTLE_ENDIAN).short.toInt() and 0xFFFF
+                } else {
+                    java.nio.ByteBuffer.wrap(data, 8, 4).order(java.nio.ByteOrder.LITTLE_ENDIAN).int
+                }
+                val headerStart = if (version <= 1) 10 else 12
+                val header = String(data, headerStart, headerLen, Charsets.US_ASCII)
                 val shapeMatch = Regex("\\(\\s*([0-9]+)\\s*,?\\s*([0-9]+)?\\s*\\)").find(header)
                 val totalElements = if (shapeMatch != null) {
                     val dim1 = shapeMatch.groupValues[1].toIntOrNull() ?: 1
                     val dim2 = shapeMatch.groupValues[2].toIntOrNull() ?: 1
                     dim1 * dim2
                 } else {
-                    data.size / 4 - 2
+                    val descrMatch = Regex("'descr'.*'<f4'").find(header)
+                    if (descrMatch != null) {
+                        val shapeStr = header.substringAfter("'shape':").substringBefore("}").trim(' ', ',')
+                        val dims = shapeStr.trim('(', ')').split(',').mapNotNull { it.trim().toIntOrNull() }
+                        if (dims.isNotEmpty()) dims.fold(1) { a, b -> a * b } else data.size / 4 - 2
+                    } else {
+                        data.size / 4 - 2
+                    }
                 }
-                val dataOffset = data.size - totalElements * 4
-                if (dataOffset < 0) return FloatArray(0)
+                if (totalElements <= 0) return FloatArray(0)
+                val dataStart = headerStart + headerLen
+                val padding = (dataStart % 64).let { if (it == 0) 0 else 64 - it }
+                val dataOffset = dataStart + padding
+                val expectedSize = totalElements * 4
+                if (dataOffset + expectedSize > data.size) return FloatArray(0)
                 val floatData = FloatArray(totalElements)
-                java.nio.ByteBuffer.wrap(data, dataOffset, totalElements * 4)
+                java.nio.ByteBuffer.wrap(data, dataOffset, expectedSize)
                     .order(java.nio.ByteOrder.LITTLE_ENDIAN)
                     .asFloatBuffer()
                     .get(floatData)

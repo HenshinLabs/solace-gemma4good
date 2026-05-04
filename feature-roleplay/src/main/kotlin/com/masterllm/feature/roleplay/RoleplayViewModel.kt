@@ -174,7 +174,7 @@ class RoleplayViewModel @Inject constructor(
     private var loadedInferenceSignature: InferenceParams? = null
     private var loadedImageModelId: String? = null
     private var gpuAccelerationEnabled: Boolean = false
-    private val engineMutex = runtimeCoordinator.engineMutex
+
 
     init {
         viewModelScope.launch {
@@ -505,7 +505,7 @@ class RoleplayViewModel @Inject constructor(
             }
 
             if (loadedModelId != null && loadedModelId != modelId) {
-                engineMutex.withLock {
+                runtimeCoordinator.withEngineLock {
                     ggufEngine.close()
                     loadedModelId = null
                     loadedInferenceSignature = null
@@ -654,7 +654,7 @@ class RoleplayViewModel @Inject constructor(
                 _uiState.update { it.copy(generationStatus = "Processing prompt...") }
 
                 val builder = StringBuilder()
-                val promptTokens = engineMutex.withLock {
+                val promptTokens = runtimeCoordinator.withEngineLock {
                     ggufEngine.getContextLengthUsed()
                 }
                 val generationStartSnapshot = PerformanceUsageSampler.captureSnapshot()
@@ -664,7 +664,7 @@ class RoleplayViewModel @Inject constructor(
                 var streamError: Throwable? = null
 
                 try {
-                    engineMutex.withLock {
+                    runtimeCoordinator.withEngineLock {
                         ggufEngine.getResponseAsFlow(
                             text,
                             maxTokens = _uiState.value.inferenceParams.maxTokens,
@@ -721,7 +721,7 @@ class RoleplayViewModel @Inject constructor(
                 var nativeDecodeSpeed = 0f
                 var activeThreads = _uiState.value.inferenceParams.numThreads
                 var activeGpuLayers = resolveDesiredGpuLayers(activeModel)
-                engineMutex.withLock {
+                runtimeCoordinator.withEngineLock {
                     generatedTokens = (ggufEngine.getContextLengthUsed() - promptTokens).coerceAtLeast(0)
                     nativePromptSpeed = ggufEngine.getPromptProcessingSpeed()
                     nativeDecodeSpeed = ggufEngine.getResponseGenerationSpeed()
@@ -822,7 +822,11 @@ class RoleplayViewModel @Inject constructor(
         }
     }
 
-    private suspend fun ensureEngineReady(session: RoleplaySession): EngineReadyResult? = engineMutex.withLock {
+    private suspend fun ensureEngineReady(session: RoleplaySession): EngineReadyResult? = runtimeCoordinator.withEngineLock {
+        ensureEngineReadyInternal(session)
+    }
+
+    private suspend fun ensureEngineReadyInternal(session: RoleplaySession): EngineReadyResult? {
         val inferenceParams = _uiState.value.inferenceParams
         val conversation = conversationRepository.getConversationById(session.conversationId)
         val modelId = _uiState.value.selectedModelId

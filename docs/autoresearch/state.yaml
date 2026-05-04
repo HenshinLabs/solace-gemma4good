@@ -1,0 +1,6 @@
+current_stage: brainstorming
+stage_status: blocked
+profile_status: blocked-v2-required
+active_spec_path: docs/autoresearch/specs/2026-05-04-master-llm-diagnosis.md
+blocker_reason: Repo is an Android application (Kotlin/Gradle) for on-device LLM inference, not an ML research training repo. No Python training entry point, no extractable single scalar metric, unbounded run time via Android build cycle. V1 profile requires single-process training loop with stdout metric logging under 600s — none satisfiable. See diagnosis spec for full evidence.
+next_allowed_skills: []

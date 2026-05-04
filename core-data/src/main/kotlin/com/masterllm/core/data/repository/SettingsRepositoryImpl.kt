@@ -1,6 +1,7 @@
 package com.masterllm.core.data.repository
 
 import android.content.Context
+import android.content.SharedPreferences
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.*
 import androidx.datastore.preferences.preferencesDataStore
@@ -9,7 +10,9 @@ import androidx.security.crypto.MasterKey
 import com.masterllm.core.domain.model.ImageFrequency
 import com.masterllm.core.domain.repository.SettingsRepository
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.map
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -52,10 +55,16 @@ class SettingsRepositoryImpl @Inject constructor(
 
     // ─── HF Token ──────────────────────────────────────────────
 
-    override fun getHfToken(): Flow<String> {
-        return kotlinx.coroutines.flow.flow {
-            emit(encryptedPrefs.getString("hf_token", "") ?: "")
+    override fun getHfToken(): Flow<String> = callbackFlow {
+        val prefs = encryptedPrefs
+        val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+            if (key == "hf_token") {
+                trySend(prefs.getString("hf_token", "") ?: "")
+            }
         }
+        prefs.registerOnSharedPreferenceChangeListener(listener)
+        send(prefs.getString("hf_token", "") ?: "")
+        awaitClose { prefs.unregisterOnSharedPreferenceChangeListener(listener) }
     }
 
     override suspend fun setHfToken(token: String) {

@@ -6,19 +6,16 @@ import kotlinx.coroutines.flow.Flow
 import javax.inject.Inject
 
 /**
- * Validates a Hugging Face token by calling the whoami endpoint.
+ * Persists a Hugging Face token.
+ * Validation is performed separately in the auth flow via network call.
  */
 class ValidateHfTokenUseCase @Inject constructor(
     private val settingsRepository: SettingsRepository,
 ) {
-    /**
-     * @return HfUserProfile on success, throws on failure
-     */
     suspend fun execute(token: String): Result<HfUserProfile> {
         return try {
-            // Token will be validated via network call in the auth flow
             settingsRepository.setHfToken(token)
-            Result.success(HfUserProfile(username = "validated"))
+            Result.success(HfUserProfile(username = "saved"))
         } catch (e: Exception) {
             Result.failure(e)
         }

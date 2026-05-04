@@ -160,7 +160,7 @@ class LlmInferenceManager @Inject constructor(
 
     fun generate(
         prompt: String,
-        maxTokens: Int = Int.MAX_VALUE,
+        maxTokens: Int = GgufEngine.DEFAULT_MAX_TOKENS,
         onToken: (String) -> Unit = {},
     ): Flow<GenerationStatus> = flow {
         stateMutex.withLock {
@@ -168,67 +168,66 @@ class LlmInferenceManager @Inject constructor(
                 emit(GenerationStatus.Error(IllegalStateException("Model not loaded")))
                 return@flow
             }
-
             generationJob?.cancel()
             isInferenceRunning = true
+        }
 
-            try {
-                emit(GenerationStatus.Started)
+        try {
+            emit(GenerationStatus.Started)
 
-                val response = StringBuilder()
-                perfTracker.startTracking()
-                perfTracker.updateContextUsage(
-                    used = ggufEngine.getContextLengthUsed(),
-                    max = currentParams?.contextSize ?: GgufEngine.DEFAULT_CONTEXT_SIZE.toInt(),
-                )
+            val response = StringBuilder()
+            perfTracker.startTracking()
+            perfTracker.updateContextUsage(
+                used = ggufEngine.getContextLengthUsed(),
+                max = currentParams?.contextSize ?: GgufEngine.DEFAULT_CONTEXT_SIZE.toInt(),
+            )
 
-                var finalStats: InferencePerformanceTracker.LiveStats? = null
-                val duration = measureTime {
-                    ggufEngine.getResponseAsFlow(prompt, maxTokens).collect { piece ->
-                        response.append(piece)
-                        perfTracker.recordToken()
-                        perfTracker.updateContextUsage(
-                            used = ggufEngine.getContextLengthUsed(),
-                            max = currentParams?.contextSize ?: GgufEngine.DEFAULT_CONTEXT_SIZE.toInt(),
-                        )
-
-                        val snapshot = perfTracker.getSnapshot()
-                        finalStats = snapshot
-                        _liveStats.value = snapshot
-
-                        onToken(piece)
-
-                        emit(
-                            GenerationStatus.Generating(
-                                partialText = response.toString(),
-                                stats = snapshot,
-                            )
-                        )
-                    }
-                }
-
-                finalStats = perfTracker.stopTracking()
-                _liveStats.value = finalStats ?: _liveStats.value
-
-                isInferenceRunning = false
-
-                emit(
-                    GenerationStatus.Complete(
-                        finalText = response.toString(),
-                        generationSpeedTps = ggufEngine.getFinalTokensPerSecond(),
-                        generationTimeSecs = duration.inWholeSeconds.toInt(),
-                        contextLengthUsed = ggufEngine.getContextLengthUsed(),
-                        stats = finalStats,
+            var finalStats: InferencePerformanceTracker.LiveStats? = null
+            val duration = measureTime {
+                ggufEngine.getResponseAsFlow(prompt, maxTokens).collect { piece ->
+                    response.append(piece)
+                    perfTracker.recordToken()
+                    perfTracker.updateContextUsage(
+                        used = ggufEngine.getContextLengthUsed(),
+                        max = currentParams?.contextSize ?: GgufEngine.DEFAULT_CONTEXT_SIZE.toInt(),
                     )
-                )
-            } catch (e: CancellationException) {
-                isInferenceRunning = false
-                emit(GenerationStatus.Cancelled)
-            } catch (e: Exception) {
-                isInferenceRunning = false
-                LOGD("Error generating: ${e.message}")
-                emit(GenerationStatus.Error(e))
+
+                    val snapshot = perfTracker.getSnapshot()
+                    finalStats = snapshot
+                    _liveStats.value = snapshot
+
+                    onToken(piece)
+
+                    emit(
+                        GenerationStatus.Generating(
+                            partialText = response.toString(),
+                            stats = snapshot,
+                        )
+                    )
+                }
             }
+
+            finalStats = perfTracker.stopTracking()
+            _liveStats.value = finalStats ?: _liveStats.value
+
+            isInferenceRunning = false
+
+            emit(
+                GenerationStatus.Complete(
+                    finalText = response.toString(),
+                    generationSpeedTps = ggufEngine.getFinalTokensPerSecond(),
+                    generationTimeSecs = duration.inWholeSeconds.toInt(),
+                    contextLengthUsed = ggufEngine.getContextLengthUsed(),
+                    stats = finalStats,
+                )
+            )
+        } catch (e: CancellationException) {
+            isInferenceRunning = false
+            emit(GenerationStatus.Cancelled)
+        } catch (e: Exception) {
+            isInferenceRunning = false
+            LOGD("Error generating: ${e.message}")
+            emit(GenerationStatus.Error(e))
         }
     }.flowOn(Dispatchers.Default)
 

@@ -39,6 +39,9 @@ class InferencePerformanceTracker(private val context: Context) {
 
     private var startedAtNs = 0L
     private var lastSnapshotAtNs = 0L
+    private var prevProcessTicks = 0L
+    private var prevSystemTicks = 0L
+    private var prevCpuSnapshotNs = 0L
     private val cpuCount: Int = Runtime.getRuntime().availableProcessors()
     private val cpuFreqBasePaths = (0 until cpuCount).map { i ->
         "/sys/devices/system/cpu/cpu$i/cpufreq/scaling_cur_freq"
@@ -135,11 +138,27 @@ class InferencePerformanceTracker(private val context: Context) {
 
             val utime = procStat[13].toLongOrNull() ?: 0L
             val stime = procStat[14].toLongOrNull() ?: 0L
+            val processTicks = utime + stime
 
-            val totalCpu = totalStat.drop(1).sumOf { it.toLongOrNull() ?: 0L }
-            if (totalCpu <= 0L) return 0f
+            val systemTicks = totalStat.drop(1).sumOf { it.toLongOrNull() ?: 0L }
+            if (systemTicks <= 0L) return 0f
 
-            ((utime + stime).toFloat() / totalCpu.toFloat() * 100f).coerceIn(0f, 100f)
+            val nowNs = System.nanoTime()
+            if (prevCpuSnapshotNs == 0L || prevSystemTicks == 0L) {
+                prevProcessTicks = processTicks
+                prevSystemTicks = systemTicks
+                prevCpuSnapshotNs = nowNs
+                return 0f
+            }
+
+            val processDelta = (processTicks - prevProcessTicks).coerceAtLeast(0L)
+            val systemDelta = (systemTicks - prevSystemTicks).coerceAtLeast(1L)
+
+            prevProcessTicks = processTicks
+            prevSystemTicks = systemTicks
+            prevCpuSnapshotNs = nowNs
+
+            (processDelta.toFloat() / systemDelta.toFloat() * 100f).coerceIn(0f, 100f)
         } catch (e: Exception) {
             0f
         }
@@ -245,11 +264,20 @@ class InferencePerformanceTracker(private val context: Context) {
 
     private fun readThermalZones(): Map<String, Float> {
         val result = mutableMapOf<String, Float>()
-        for ((type, millicelsius) in thermalZonePaths) {
-            val celsius = millicelsius / 1000f
-            if (celsius > 0f) {
-                result[type] = celsius
-            }
+        val baseDir = File("/sys/class/thermal")
+        if (!baseDir.isDirectory) return result
+        val zoneDirs = baseDir.listFiles { file -> file.isDirectory && file.name.startsWith("thermal_zone") } ?: return result
+        for (zoneDir in zoneDirs) {
+            try {
+                val typeFile = File(zoneDir, "type")
+                if (!typeFile.exists()) continue
+                val type = typeFile.readText().trim()
+                val tempFile = File(zoneDir, "temp")
+                if (!tempFile.exists()) continue
+                val millicelsius = tempFile.readText().trim().toLongOrNull() ?: continue
+                val celsius = millicelsius / 1000f
+                if (celsius > 0f) result[type] = celsius
+            } catch (_: Exception) {}
         }
         return result
     }

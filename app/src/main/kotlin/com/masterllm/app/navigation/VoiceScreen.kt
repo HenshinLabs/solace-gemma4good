@@ -46,24 +46,30 @@ fun VoiceScreen(modifier: Modifier = Modifier) {
 
     // Initialize KittenTTS
     LaunchedEffect(Unit) {
-        val engine = KittenTtsEngine()
-        kittenReady = engine.initialize(context)
-        if (kittenReady) {
-            kittenTts.value = engine
-            Log.i(TAG, "KittenTTS ready")
-        } else {
-            Log.e(TAG, "KittenTTS init failed")
+        try {
+            val engine = KittenTtsEngine()
+            kittenReady = engine.initialize(context)
+            if (kittenReady) {
+                kittenTts.value = engine
+                Log.i(TAG, "KittenTTS ready")
+            } else {
+                Log.e(TAG, "KittenTTS init failed")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "KittenTTS crash: ${e.message}")
         }
     }
 
     // TTS engine state
     val ttsEngine = remember { mutableStateOf<TextToSpeech?>(null) }
+    var ttsInitFailed by remember { mutableStateOf(false) }
     val ttsInitListener = remember {
         TextToSpeech.OnInitListener { status ->
             if (status == TextToSpeech.SUCCESS) {
                 ttsEngine.value?.language = Locale.US
                 Log.i(TAG, "TTS engine initialized successfully")
             } else {
+                ttsInitFailed = true
                 Log.e(TAG, "TTS engine initialization failed: $status")
             }
         }
@@ -71,13 +77,23 @@ fun VoiceScreen(modifier: Modifier = Modifier) {
 
     // Initialize TTS on first composition
     DisposableEffect(context) {
-        val tts = TextToSpeech(context, ttsInitListener)
-        ttsEngine.value = tts
+        var tts: TextToSpeech? = null
+        try {
+            tts = TextToSpeech(context, ttsInitListener)
+            ttsEngine.value = tts
+        } catch (e: Exception) {
+            ttsInitFailed = true
+            Log.e(TAG, "TTS creation failed: ${e.message}")
+        }
         onDispose {
-            tts.stop()
-            tts.shutdown()
+            try {
+                tts?.stop()
+                tts?.shutdown()
+            } catch (_: Exception) {}
             ttsEngine.value = null
-            kittenTts.value?.destroy()
+            try {
+                kittenTts.value?.destroy()
+            } catch (_: Exception) {}
         }
     }
 

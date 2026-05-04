@@ -52,6 +52,7 @@ object Routes {
     const val OLLAMA_EXPLORER = "ollama_explorer"
     const val OLLAMA_SERVE = "ollama_serve"
     const val VOICE = "voice"
+    const val AGENT = "agent"
 }
 
 /** Bottom navigation tab definitions. */
@@ -199,6 +200,13 @@ fun MasterLLMApp(modifier: Modifier = Modifier) {
             }
             composable(Routes.VOICE) {
                 VoiceScreen(modifier = Modifier.fillMaxSize())
+            }
+            composable(Routes.AGENT) {
+                AgentScreen(
+                    ggufEngine = hiltViewModel<GgufEngineViewModel>().engine,
+                    onNavigateBack = { navController.popBackStack() },
+                    modifier = Modifier.fillMaxSize(),
+                )
             }
         }
     }

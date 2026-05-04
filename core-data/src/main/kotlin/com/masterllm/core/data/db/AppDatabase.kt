@@ -14,8 +14,8 @@ import androidx.room.RoomDatabase
         RoleplaySessionEntity::class,
         CharacterVisualCacheEntity::class,
     ],
-    version = 1,
-    exportSchema = false,
+    version = 2,
+    exportSchema = true,
 )
 abstract class AppDatabase : RoomDatabase() {
     abstract fun modelDao(): ModelDao

@@ -7,6 +7,7 @@ import kotlinx.coroutines.flow.*
 import okhttp3.*
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
+
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.net.ConnectException
@@ -42,7 +43,6 @@ class OllamaApiService @Inject constructor() {
             .apply {
                 if (baseUrl.startsWith("http://")) {
                     // Allow cleartext for localhost Ollama connections
-                    hostnameVerifier { _, _ -> true }
                 }
             }
             .build()
@@ -124,6 +124,7 @@ class OllamaApiService @Inject constructor() {
                             emit(content)
                         }
                     } catch (e: Exception) {
+                        System.err.println("[OllamaApi] Failed to parse chat chunk: ${e.message}")
                     }
                 }
             }
@@ -249,6 +250,7 @@ class OllamaApiService @Inject constructor() {
         OllamaLibraryModel("qwen2.5-coder", "Qwen 2.5 Coder (0.5B to 32B)", "890K", listOf("latest", "0.5b", "1.5b", "3b", "7b", "14b", "32b"), "2024-11"),
         OllamaLibraryModel("qwen3", "Alibaba Qwen3 thinking models (0.6B to 32B)", "420K", listOf("latest", "0.6b", "1.7b", "4b", "8b", "14b", "32b"), "2025-04"),
         OllamaLibraryModel("qwen3moe", "Alibaba Qwen3 MoE (30B)", "210K", listOf("latest", "30b"), "2025-04"),
+        OllamaLibraryModel("qwen3.5", "Alibaba Qwen3.5 multimodal (0.8B to 235B) — vision, tool-use, 262K context", "180K", listOf("latest", "0.8b", "2b", "4b", "8b", "14b", "32b", "235b"), "2026-03"),
         OllamaLibraryModel("command-r", "Cohere Command R (35B) for RAG", "780K", listOf("latest", "35b"), "2024-10"),
         OllamaLibraryModel("command-r-plus", "Cohere Command R+ (104B)", "340K", listOf("latest", "104b"), "2024-11"),
         OllamaLibraryModel("aya-expanse", "Cohere Aya Expanse multilingual (8B, 32B)", "210K", listOf("latest", "8b", "32b"), "2025-02"),
