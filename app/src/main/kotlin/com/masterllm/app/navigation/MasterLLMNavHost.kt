@@ -203,7 +203,6 @@ fun MasterLLMApp(modifier: Modifier = Modifier) {
             }
             composable(Routes.AGENT) {
                 AgentScreen(
-                    ggufEngine = hiltViewModel<GgufEngineViewModel>().engine,
                     onNavigateBack = { navController.popBackStack() },
                     modifier = Modifier.fillMaxSize(),
                 )

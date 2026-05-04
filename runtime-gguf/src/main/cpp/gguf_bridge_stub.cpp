@@ -102,7 +102,7 @@ Java_com_masterllm_runtime_gguf_GgufEngine_getContextSizeUsed(
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_masterllm_runtime_gguf_GgufEngine_close(
+Java_com_masterllm_runtime_gguf_GgufEngine_closeNative(
     JNIEnv* /*env*/,
     jobject /*thiz*/,
     jlong modelPtr
