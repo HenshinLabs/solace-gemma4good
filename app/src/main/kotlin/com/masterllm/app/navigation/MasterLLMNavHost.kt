@@ -25,12 +25,15 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import androidx.hilt.navigation.compose.hiltViewModel
 import com.masterllm.feature.auth.AuthScreen
 import com.masterllm.feature.chat.ChatScreen
+import com.masterllm.feature.chat.TaskTemplatesScreen
 import com.masterllm.feature.image.gen.ImageGenScreen
 import com.masterllm.feature.marketplace.MarketplaceScreen
 import com.masterllm.feature.model.manager.ModelManagerScreen
 import com.masterllm.feature.roleplay.RoleplayScreen
+import com.masterllm.feature.performance.PerformanceMonitorScreen
 import com.masterllm.feature.settings.SettingsScreen
 
 /** Route identifiers for each top-level destination. */
@@ -43,6 +46,8 @@ object Routes {
     const val SETTINGS = "settings"
     const val AUTH = "auth"
     const val MODEL_MANAGER = "model_manager"
+    const val PERFORMANCE = "performance"
+    const val TASK_TEMPLATES = "task_templates"
 }
 
 /** Bottom navigation tab definitions. */
@@ -144,6 +149,7 @@ fun MasterLLMApp(modifier: Modifier = Modifier) {
                     onOpenAuth = { navController.navigate(Routes.AUTH) },
                     onOpenModelManager = { navController.navigate(Routes.MODEL_MANAGER) },
                     onOpenImageGen = { navController.navigate(Routes.IMAGE_GEN) },
+                    onOpenPerformance = { navController.navigate(Routes.PERFORMANCE) },
                 )
             }
 
@@ -159,6 +165,23 @@ fun MasterLLMApp(modifier: Modifier = Modifier) {
             }
             composable(Routes.ROLEPLAY) {
                 RoleplayScreen(modifier = Modifier.fillMaxSize())
+            }
+            composable(Routes.PERFORMANCE) {
+                PerformanceMonitorScreen(
+                    modifier = Modifier.fillMaxSize(),
+                    onNavigateBack = { navController.popBackStack() },
+                )
+            }
+            composable(Routes.TASK_TEMPLATES) {
+                val chatViewModel: com.masterllm.feature.chat.ChatViewModel = androidx.hilt.navigation.compose.hiltViewModel()
+                TaskTemplatesScreen(
+                    onBackClick = { navController.popBackStack() },
+                    onApplyTemplate = { systemPrompt, starterPrompt ->
+                        chatViewModel.onAction(
+                            com.masterllm.feature.chat.ChatAction.ApplyTaskTemplate(systemPrompt, starterPrompt)
+                        )
+                    },
+                )
             }
         }
     }

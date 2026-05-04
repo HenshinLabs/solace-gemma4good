@@ -19,10 +19,12 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountCircle
+import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.ModelTraining
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material3.Text
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
@@ -45,6 +47,7 @@ fun SettingsScreen(
     onOpenAuth: () -> Unit = {},
     onOpenModelManager: () -> Unit = {},
     onOpenImageGen: () -> Unit = {},
+    onOpenPerformance: () -> Unit = {},
     viewModel: SettingsViewModel = hiltViewModel(),
 ) {
     val state = viewModel.uiState.collectAsStateWithLifecycle().value
@@ -122,6 +125,19 @@ fun SettingsScreen(
                             checked = state.gpuAccelerationEnabled,
                             onCheckedChange = { viewModel.onAction(SettingsAction.GpuAccelerationChanged(it)) },
                         )
+
+                        Spacer(Modifier.height(12.dp))
+                        HorizontalDivider()
+                        Spacer(Modifier.height(12.dp))
+
+                        Button(
+                            onClick = onOpenPerformance,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Icon(Icons.Default.Speed, contentDescription = null)
+                            Spacer(Modifier.width(8.dp))
+                            Text("Open Performance Monitor")
+                        }
 
                         Spacer(Modifier.height(12.dp))
                         HorizontalDivider()
@@ -208,6 +224,28 @@ fun SettingsScreen(
                         ThemeSelector(
                             selected = state.theme,
                             onSelect = { viewModel.onAction(SettingsAction.ThemeChanged(it)) },
+                        )
+                    }
+                }
+
+                item {
+                    SettingsSectionCard(
+                        icon = Icons.Default.Cloud,
+                        title = "Ollama Server",
+                        subtitle = "Configure remote Ollama backend for chat inference",
+                    ) {
+                        OllamaSettingsSection(
+                            host = state.ollamaHost,
+                            enabled = state.ollamaEnabled,
+                            keepAlive = state.ollamaKeepAlive,
+                            systemPrompt = state.ollamaSystemPrompt,
+                            connectionStatus = state.ollamaConnectionStatus,
+                            connectionChecking = state.ollamaConnectionChecking,
+                            onHostChanged = { viewModel.onAction(SettingsAction.OllamaHostChanged(it)) },
+                            onEnabledChanged = { viewModel.onAction(SettingsAction.OllamaEnabledChanged(it)) },
+                            onKeepAliveChanged = { viewModel.onAction(SettingsAction.OllamaKeepAliveChanged(it)) },
+                            onSystemPromptChanged = { viewModel.onAction(SettingsAction.OllamaSystemPromptChanged(it)) },
+                            onTestConnection = { viewModel.onAction(SettingsAction.TestOllamaConnection) },
                         )
                     }
                 }
@@ -355,7 +393,7 @@ private fun LabeledSlider(
 }
 
 @Composable
-private fun SettingSwitchRow(
+fun SettingSwitchRow(
     title: String,
     subtitle: String,
     checked: Boolean,

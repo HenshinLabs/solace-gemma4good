@@ -1,12 +1,18 @@
 package com.masterllm.core.data.db
 
+import androidx.annotation.NonNull
 import androidx.room.Entity
+import androidx.room.ForeignKey
+import androidx.room.Index
 import androidx.room.PrimaryKey
 
 /**
  * Room entity for persisting downloaded model metadata.
  */
-@Entity(tableName = "models")
+@Entity(
+    tableName = "models",
+    indices = [Index(value = ["downloadState"])]
+)
 data class ModelEntity(
     @PrimaryKey val id: String,
     val repoId: String = "",
@@ -41,7 +47,21 @@ data class ConversationEntity(
 /**
  * Room entity for messages.
  */
-@Entity(tableName = "messages")
+@Entity(
+    tableName = "messages",
+    foreignKeys = [
+        ForeignKey(
+            entity = ConversationEntity::class,
+            parentColumns = ["id"],
+            childColumns = ["conversationId"],
+            onDelete = ForeignKey.CASCADE,
+        )
+    ],
+    indices = [
+        Index(value = ["conversationId"]),
+        Index(value = ["timestamp"]),
+    ]
+)
 data class MessageEntity(
     @PrimaryKey val id: String,
     val conversationId: String = "",
@@ -86,8 +106,8 @@ data class RoleplaySessionEntity(
     primaryKeys = ["characterName", "sessionId"]
 )
 data class CharacterVisualCacheEntity(
-    val characterName: String,
-    val sessionId: String,
+    @NonNull val characterName: String,
+    @NonNull val sessionId: String,
     val anchorPrompt: String = "",
     val lastImagePath: String? = null,
     val updatedAt: Long = System.currentTimeMillis(),

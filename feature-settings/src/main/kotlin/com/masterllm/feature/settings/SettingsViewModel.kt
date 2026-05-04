@@ -7,6 +7,7 @@ import android.os.Build
 import android.os.Environment
 import com.masterllm.core.domain.model.ImageFrequency
 import com.masterllm.core.domain.repository.SettingsRepository
+import com.masterllm.core.ollama.api.OllamaApiService
 import com.masterllm.runtime.gguf.GgufEngine
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -32,8 +33,14 @@ data class SettingsUiState(
 	val usingDefaultStoragePath: Boolean = true,
 	val gpuDriverStatus: String = "Detecting GPU driver...",
 	val gpuDriverDetails: String = "",
-	val gpuValidationChecks: List<String> = emptyList(),
-	val error: String? = null,
+    val gpuValidationChecks: List<String> = emptyList(),
+    val error: String? = null,
+    val ollamaHost: String = "http://localhost:11434",
+    val ollamaEnabled: Boolean = false,
+    val ollamaKeepAlive: String = "300",
+    val ollamaSystemPrompt: String = "You are a helpful AI assistant.",
+    val ollamaConnectionStatus: String? = null,
+    val ollamaConnectionChecking: Boolean = false,
 )
 
 sealed interface SettingsAction {
@@ -44,15 +51,21 @@ sealed interface SettingsAction {
 	data class CharacterConsistencyChanged(val enabled: Boolean) : SettingsAction
 	data class GpuAccelerationChanged(val enabled: Boolean) : SettingsAction
 	data class ModelStoragePathChanged(val path: String) : SettingsAction
-	data object SaveModelStoragePath : SettingsAction
-	data object DismissError : SettingsAction
+    data object SaveModelStoragePath : SettingsAction
+    data object DismissError : SettingsAction
+    data class OllamaHostChanged(val host: String) : SettingsAction
+    data class OllamaEnabledChanged(val enabled: Boolean) : SettingsAction
+    data class OllamaKeepAliveChanged(val keepAlive: String) : SettingsAction
+    data class OllamaSystemPromptChanged(val prompt: String) : SettingsAction
+    data object TestOllamaConnection : SettingsAction
 }
 
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
-	private val settingsRepository: SettingsRepository,
-	private val ggufEngine: GgufEngine,
-	@ApplicationContext private val appContext: Context,
+    private val settingsRepository: SettingsRepository,
+    private val ggufEngine: GgufEngine,
+    private val ollamaApiService: OllamaApiService,
+    @ApplicationContext private val appContext: Context,
 ) : ViewModel() {
 
 	private val defaultStoragePath: String by lazy {
@@ -98,18 +111,38 @@ class SettingsViewModel @Inject constructor(
 				_uiState.update { it.copy(gpuAccelerationEnabled = value) }
 			}
 		}
-		viewModelScope.launch {
-			settingsRepository.getModelStoragePath().collect { value ->
-				_uiState.update {
-					it.copy(
-						modelStoragePath = value,
-						defaultModelStoragePath = defaultStoragePath,
-						effectiveModelStoragePath = resolveEffectiveStoragePath(value),
-						usingDefaultStoragePath = value.isBlank(),
-					)
-				}
-			}
-		}
+        viewModelScope.launch {
+            settingsRepository.getModelStoragePath().collect { value ->
+                _uiState.update {
+                    it.copy(
+                        modelStoragePath = value,
+                        defaultModelStoragePath = defaultStoragePath,
+                        effectiveModelStoragePath = resolveEffectiveStoragePath(value),
+                        usingDefaultStoragePath = value.isBlank(),
+                    )
+                }
+            }
+        }
+        viewModelScope.launch {
+            settingsRepository.getOllamaHost().collect { value ->
+                _uiState.update { it.copy(ollamaHost = value.ifBlank { "http://localhost:11434" }) }
+            }
+        }
+        viewModelScope.launch {
+            settingsRepository.getOllamaEnabled().collect { value ->
+                _uiState.update { it.copy(ollamaEnabled = value) }
+            }
+        }
+        viewModelScope.launch {
+            settingsRepository.getOllamaKeepAlive().collect { value ->
+                _uiState.update { it.copy(ollamaKeepAlive = value.ifBlank { "300" }) }
+            }
+        }
+        viewModelScope.launch {
+            settingsRepository.getOllamaSystemPrompt().collect { value ->
+                _uiState.update { it.copy(ollamaSystemPrompt = value.ifBlank { "You are a helpful AI assistant." }) }
+            }
+        }
 
 		_uiState.update {
 			it.copy(
@@ -195,7 +228,25 @@ class SettingsViewModel @Inject constructor(
 				}
 			}
 
-			SettingsAction.DismissError -> _uiState.update { it.copy(error = null) }
+            SettingsAction.DismissError -> _uiState.update { it.copy(error = null) }
+            is SettingsAction.OllamaHostChanged -> {
+                _uiState.update { it.copy(ollamaHost = action.host) }
+                viewModelScope.launch { settingsRepository.setOllamaHost(action.host) }
+                ollamaApiService.configure(action.host.ifBlank { "http://localhost:11434" })
+            }
+            is SettingsAction.OllamaEnabledChanged -> {
+                _uiState.update { it.copy(ollamaEnabled = action.enabled) }
+                viewModelScope.launch { settingsRepository.setOllamaEnabled(action.enabled) }
+            }
+            is SettingsAction.OllamaKeepAliveChanged -> {
+                _uiState.update { it.copy(ollamaKeepAlive = action.keepAlive) }
+                viewModelScope.launch { settingsRepository.setOllamaKeepAlive(action.keepAlive) }
+            }
+            is SettingsAction.OllamaSystemPromptChanged -> {
+                _uiState.update { it.copy(ollamaSystemPrompt = action.prompt) }
+                viewModelScope.launch { settingsRepository.setOllamaSystemPrompt(action.prompt) }
+            }
+            SettingsAction.TestOllamaConnection -> testOllamaConnection()
 		}
 	}
 
@@ -254,11 +305,28 @@ class SettingsViewModel @Inject constructor(
 		return root
 	}
 
-	private fun resolveEffectiveStoragePath(path: String): String {
-		val trimmed = path.trim()
-		if (trimmed.isBlank()) {
-			return defaultStoragePath
-		}
-		return File(trimmed).absolutePath
-	}
+    private fun resolveEffectiveStoragePath(path: String): String {
+        val trimmed = path.trim()
+        if (trimmed.isBlank()) {
+            return defaultStoragePath
+        }
+        return File(trimmed).absolutePath
+    }
+
+    private fun testOllamaConnection() {
+        viewModelScope.launch {
+            _uiState.update { it.copy(ollamaConnectionChecking = true, ollamaConnectionStatus = null) }
+            val result = ollamaApiService.validateHost()
+            _uiState.update {
+                it.copy(
+                    ollamaConnectionChecking = false,
+                    ollamaConnectionStatus = if (result.isAvailable) {
+                        "Connected${result.version?.let { v -> ": $v" } ?: ""}"
+                    } else {
+                        result.error ?: "Connection failed"
+                    },
+                )
+            }
+        }
+    }
 }

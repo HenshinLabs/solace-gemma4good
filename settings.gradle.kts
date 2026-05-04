@@ -29,9 +29,11 @@ include(":app")
 include(":core-data")
 include(":core-domain")
 include(":core-network")
+include(":core-ollama")
 include(":core-ui")
 
 // Feature modules
+include(":feature-performance")
 include(":feature-auth")
 include(":feature-marketplace")
 include(":feature-model-manager")

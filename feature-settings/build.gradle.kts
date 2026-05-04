@@ -31,6 +31,7 @@ android {
 dependencies {
     implementation(project(":core-domain"))
     implementation(project(":core-data"))
+    implementation(project(":core-ollama"))
     implementation(project(":core-ui"))
     implementation(project(":runtime-gguf"))
 

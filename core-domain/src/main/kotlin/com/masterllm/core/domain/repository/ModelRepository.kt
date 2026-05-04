@@ -86,4 +86,16 @@ interface SettingsRepository {
 
     fun getModelStoragePath(): Flow<String>
     suspend fun setModelStoragePath(path: String)
+
+    fun getOllamaHost(): Flow<String>
+    suspend fun setOllamaHost(host: String)
+
+    fun getOllamaEnabled(): Flow<Boolean>
+    suspend fun setOllamaEnabled(enabled: Boolean)
+
+    fun getOllamaKeepAlive(): Flow<String>
+    suspend fun setOllamaKeepAlive(keepAlive: String)
+
+    fun getOllamaSystemPrompt(): Flow<String>
+    suspend fun setOllamaSystemPrompt(prompt: String)
 }

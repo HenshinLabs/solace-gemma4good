@@ -46,8 +46,8 @@ android {
         applicationId = "com.masterllm.app"
         minSdk = libs.versions.minSdk.get().toInt()
         targetSdk = libs.versions.targetSdk.get().toInt()
-versionCode = 18
-versionName = "1.0.18"
+versionCode = 19
+versionName = "1.0.19"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -127,6 +127,7 @@ dependencies {
     implementation(project(":core-data"))
     implementation(project(":core-domain"))
     implementation(project(":core-network"))
+    implementation(project(":core-ollama"))
     implementation(project(":core-ui"))
 
     implementation(project(":feature-auth"))
@@ -135,6 +136,7 @@ dependencies {
     implementation(project(":feature-chat"))
     implementation(project(":feature-image-gen"))
     implementation(project(":feature-roleplay"))
+    implementation(project(":feature-performance"))
     implementation(project(":feature-settings"))
 
     implementation(project(":runtime-gguf"))

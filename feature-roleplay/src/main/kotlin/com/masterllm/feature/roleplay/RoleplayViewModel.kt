@@ -859,7 +859,7 @@ class RoleplayViewModel @Inject constructor(
                 loadedInferenceSignature != inferenceParams
 
         if (requiresReload) {
-            val path = textRuntimeModel.localPath ?: "/data/models/${textRuntimeModel.fileName}"
+            val path = textRuntimeModel.localPath ?: modelFallbackPath(textRuntimeModel.fileName)
 
             val loadStartedAtNs = System.nanoTime()
             ggufEngine.load(
@@ -961,6 +961,11 @@ class RoleplayViewModel @Inject constructor(
         }
     }
 
+    private fun modelFallbackPath(fileName: String): String {
+        val defaultDir = appContext.getExternalFilesDir(null)?.absolutePath ?: appContext.filesDir.absolutePath
+        return "$defaultDir/models/$fileName"
+    }
+
     private fun runtimeBackendLabelForModel(format: ModelFormat?): String {
         return when (format) {
             ModelFormat.GGUF -> "GGUF/${GgufEngine.getLoadedNativeLibraryName()}"
@@ -981,7 +986,7 @@ class RoleplayViewModel @Inject constructor(
     private suspend fun ensureImageEngineReady(model: LlmModel) {
         if (loadedImageModelId == model.id && imageGenEngine.isAvailable()) return
 
-        val path = model.localPath ?: "/data/models/${model.fileName}"
+        val path = model.localPath ?: modelFallbackPath(model.fileName)
         imageGenEngine.loadModel(path).getOrElse { throw it }
         loadedImageModelId = model.id
     }

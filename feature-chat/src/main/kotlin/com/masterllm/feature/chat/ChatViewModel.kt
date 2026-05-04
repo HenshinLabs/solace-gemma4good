@@ -8,6 +8,9 @@ import com.masterllm.core.domain.model.*
 import com.masterllm.core.domain.repository.ConversationRepository
 import com.masterllm.core.domain.repository.ModelRepository
 import com.masterllm.core.domain.repository.SettingsRepository
+import com.masterllm.core.ollama.api.OllamaApiService
+import com.masterllm.core.ollama.model.OllamaModelInfo
+import kotlinx.coroutines.flow.catch
 import com.masterllm.runtime.gguf.GgufEngine
 import com.masterllm.runtime.gguf.GgufRuntimeCoordinator
 import com.masterllm.runtime.gguf.PerformanceUsageSampler
@@ -35,6 +38,8 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.UUID
 import javax.inject.Inject
+
+enum class ChatBackend { LOCAL, OLLAMA }
 
 data class GenerationStats(
     val modelDisplayName: String,
@@ -103,6 +108,10 @@ data class ChatUiState(
     val modelRuntime: ModelRuntimeInfo = ModelRuntimeInfo(),
     val benchmarkRunning: Boolean = false,
     val benchmarkResult: String? = null,
+    val chatBackend: ChatBackend = ChatBackend.LOCAL,
+    val ollamaConnected: Boolean = false,
+    val ollamaModels: List<OllamaModelInfo> = emptyList(),
+    val ollamaSelectedModel: String = "",
 )
 
 sealed interface ChatAction {
@@ -128,6 +137,9 @@ sealed interface ChatAction {
     data class ApplyTaskTemplate(val systemPrompt: String, val starterPrompt: String) : ChatAction
     data object RunBenchmark : ChatAction
     data object ClearBenchmarkResult : ChatAction
+    data object ToggleBackend : ChatAction
+    data object CheckOllamaConnection : ChatAction
+    data class SelectOllamaModel(val modelName: String) : ChatAction
 }
 
 @HiltViewModel
@@ -139,6 +151,7 @@ class ChatViewModel @Inject constructor(
     private val runtimeCoordinator: GgufRuntimeCoordinator,
     private val imageGenEngine: ImageGenEngine,
     private val safetensorsEngine: SafetensorsEngine,
+    private val ollamaApiService: OllamaApiService,
     @ApplicationContext private val appContext: Context,
 ) : ViewModel() {
 
@@ -258,6 +271,9 @@ class ChatViewModel @Inject constructor(
             is ChatAction.ApplyTaskTemplate -> applyTaskTemplate(action.systemPrompt, action.starterPrompt)
             ChatAction.RunBenchmark -> runBenchmark()
             ChatAction.ClearBenchmarkResult -> _uiState.update { it.copy(benchmarkResult = null) }
+            ChatAction.ToggleBackend -> toggleBackend()
+            ChatAction.CheckOllamaConnection -> checkOllamaConnection()
+            is ChatAction.SelectOllamaModel -> selectOllamaModel(action.modelName)
         }
     }
 
@@ -571,6 +587,11 @@ class ChatViewModel @Inject constructor(
     private fun sendMessage() {
         val text = _uiState.value.inputText.trim()
         if (text.isEmpty()) return
+
+        if (_uiState.value.chatBackend == ChatBackend.OLLAMA) {
+            ollamaChat(text)
+            return
+        }
 
         generationJob?.cancel()
 
@@ -1194,6 +1215,46 @@ class ChatViewModel @Inject constructor(
         }
     }
 
+    private fun toggleBackend() {
+        viewModelScope.launch {
+            val current = _uiState.value.chatBackend
+            val next = if (current == ChatBackend.LOCAL) ChatBackend.OLLAMA else ChatBackend.LOCAL
+            _uiState.update { it.copy(chatBackend = next) }
+            if (next == ChatBackend.OLLAMA) {
+                checkOllamaConnection()
+            }
+        }
+    }
+
+    private fun checkOllamaConnection() {
+        viewModelScope.launch {
+            _uiState.update { it.copy(ollamaConnected = false) }
+            ollamaApiService.validateHost().let { result ->
+                if (result.isAvailable) {
+                    ollamaApiService.listModels().onSuccess { models ->
+                        _uiState.update {
+                            it.copy(
+                                ollamaConnected = true,
+                                ollamaModels = models,
+                                ollamaSelectedModel = models.firstOrNull()?.name ?: "",
+                            )
+                        }
+                    }.onFailure {
+                        _uiState.update { it.copy(ollamaConnected = true, ollamaModels = emptyList()) }
+                    }
+                } else {
+                    _uiState.update {
+                        it.copy(error = "Ollama not available: ${result.error ?: "unknown"}")
+                    }
+                }
+            }
+        }
+    }
+
+    private fun selectOllamaModel(modelName: String) {
+        _uiState.update { it.copy(ollamaSelectedModel = modelName) }
+    }
+
     private fun buildPrompt(userText: String): String {
         val history = _uiState.value.messages
             .takeLast(10)
@@ -1208,6 +1269,89 @@ class ChatViewModel @Inject constructor(
             }
             appendLine("user: $userText")
             append("assistant:")
+        }
+    }
+
+    private fun ollamaChat(userText: String) {
+        val convo = _uiState.value.currentConversation
+        if (convo == null) {
+            _uiState.update { it.copy(error = "Start or select a conversation first") }
+            return
+        }
+        val modelName = _uiState.value.ollamaSelectedModel.ifBlank {
+            _uiState.update { it.copy(error = "Select an Ollama model first") }
+            return
+        }
+
+        generationJob?.cancel()
+        generationJob = viewModelScope.launch {
+            _uiState.update {
+                it.copy(
+                    inputText = "",
+                    isGenerating = true,
+                    streamingText = "",
+                    generationStatus = "Connecting to Ollama...",
+                    error = null,
+                )
+            }
+
+            try {
+                val userMsg = Message(
+                    id = UUID.randomUUID().toString(),
+                    conversationId = convo.id,
+                    role = MessageRole.USER,
+                    content = userText,
+                )
+                conversationRepository.addMessage(userMsg)
+
+                val systemPrompt = _uiState.value.inferenceParams.systemPrompt
+                val messages = mutableListOf<com.masterllm.core.ollama.model.ChatMessage>()
+                if (systemPrompt.isNotBlank()) {
+                    messages.add(com.masterllm.core.ollama.model.ChatMessage(role = "system", content = systemPrompt))
+                }
+                messages.add(com.masterllm.core.ollama.model.ChatMessage(role = "user", content = userText))
+
+                val request = com.masterllm.core.ollama.model.ChatRequest(
+                    model = modelName,
+                    messages = messages,
+                    stream = true,
+                )
+
+                val builder = StringBuilder()
+                _uiState.update { it.copy(generationStatus = "Generating...") }
+
+                ollamaApiService.chatStream(request).collect { piece ->
+                    builder.append(piece)
+                    _uiState.update { it.copy(streamingText = builder.toString()) }
+                }
+
+                val finalText = builder.toString()
+                if (finalText.isNotEmpty()) {
+                    val assistantMsg = Message(
+                        id = UUID.randomUUID().toString(),
+                        conversationId = convo.id,
+                        role = MessageRole.ASSISTANT,
+                        content = finalText,
+                    )
+                    conversationRepository.addMessage(assistantMsg)
+                }
+
+                if (convo.title == "New Conversation") {
+                    val title = userText.take(40) + if (userText.length > 40) "…" else ""
+                    conversationRepository.updateConversation(convo.copy(title = title))
+                }
+            } catch (_: CancellationException) {
+            } catch (e: Exception) {
+                _uiState.update { it.copy(error = "Ollama error: ${e.message}") }
+            } finally {
+                _uiState.update {
+                    it.copy(
+                        isGenerating = false,
+                        streamingText = "",
+                        generationStatus = null,
+                    )
+                }
+            }
         }
     }
 }

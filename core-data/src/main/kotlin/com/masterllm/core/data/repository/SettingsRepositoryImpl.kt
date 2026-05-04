@@ -4,6 +4,8 @@ import android.content.Context
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.*
 import androidx.datastore.preferences.preferencesDataStore
+import androidx.security.crypto.EncryptedSharedPreferences
+import androidx.security.crypto.MasterKey
 import com.masterllm.core.domain.model.ImageFrequency
 import com.masterllm.core.domain.repository.SettingsRepository
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -19,6 +21,19 @@ class SettingsRepositoryImpl @Inject constructor(
     @ApplicationContext private val context: Context,
 ) : SettingsRepository {
 
+    private val encryptedPrefs by lazy {
+        val masterKey = MasterKey.Builder(context)
+            .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+            .build()
+        EncryptedSharedPreferences.create(
+            context,
+            "secure_settings",
+            masterKey,
+            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
+        )
+    }
+
     private object Keys {
         val HF_TOKEN = stringPreferencesKey("hf_token")
         val HF_USERNAME = stringPreferencesKey("hf_username")
@@ -29,15 +44,22 @@ class SettingsRepositoryImpl @Inject constructor(
         val CHARACTER_CONSISTENCY = booleanPreferencesKey("character_consistency")
         val GPU_ACCELERATION = booleanPreferencesKey("gpu_acceleration")
         val MODEL_STORAGE_PATH = stringPreferencesKey("model_storage_path")
+        val OLLAMA_HOST = stringPreferencesKey("ollama_host")
+        val OLLAMA_ENABLED = booleanPreferencesKey("ollama_enabled")
+        val OLLAMA_KEEP_ALIVE = stringPreferencesKey("ollama_keep_alive")
+        val OLLAMA_SYSTEM_PROMPT = stringPreferencesKey("ollama_system_prompt")
     }
 
     // ─── HF Token ──────────────────────────────────────────────
 
-    override fun getHfToken(): Flow<String> =
-        context.dataStore.data.map { it[Keys.HF_TOKEN] ?: "" }
+    override fun getHfToken(): Flow<String> {
+        return kotlinx.coroutines.flow.flow {
+            emit(encryptedPrefs.getString("hf_token", "") ?: "")
+        }
+    }
 
     override suspend fun setHfToken(token: String) {
-        context.dataStore.edit { it[Keys.HF_TOKEN] = token }
+        encryptedPrefs.edit().putString("hf_token", token).apply()
     }
 
     // ─── HF Username ─────────────────────────────────────────
@@ -116,5 +138,41 @@ class SettingsRepositoryImpl @Inject constructor(
 
     override suspend fun setModelStoragePath(path: String) {
         context.dataStore.edit { it[Keys.MODEL_STORAGE_PATH] = path }
+    }
+
+    // ─── Ollama Host ────────────────────────────────────────────
+
+    override fun getOllamaHost(): Flow<String> =
+        context.dataStore.data.map { it[Keys.OLLAMA_HOST] ?: "" }
+
+    override suspend fun setOllamaHost(host: String) {
+        context.dataStore.edit { it[Keys.OLLAMA_HOST] = host }
+    }
+
+    // ─── Ollama Enabled ─────────────────────────────────────────
+
+    override fun getOllamaEnabled(): Flow<Boolean> =
+        context.dataStore.data.map { it[Keys.OLLAMA_ENABLED] ?: false }
+
+    override suspend fun setOllamaEnabled(enabled: Boolean) {
+        context.dataStore.edit { it[Keys.OLLAMA_ENABLED] = enabled }
+    }
+
+    // ─── Ollama Keep Alive ──────────────────────────────────────
+
+    override fun getOllamaKeepAlive(): Flow<String> =
+        context.dataStore.data.map { it[Keys.OLLAMA_KEEP_ALIVE] ?: "300" }
+
+    override suspend fun setOllamaKeepAlive(keepAlive: String) {
+        context.dataStore.edit { it[Keys.OLLAMA_KEEP_ALIVE] = keepAlive }
+    }
+
+    // ─── Ollama System Prompt ───────────────────────────────────
+
+    override fun getOllamaSystemPrompt(): Flow<String> =
+        context.dataStore.data.map { it[Keys.OLLAMA_SYSTEM_PROMPT] ?: "You are a helpful AI assistant." }
+
+    override suspend fun setOllamaSystemPrompt(prompt: String) {
+        context.dataStore.edit { it[Keys.OLLAMA_SYSTEM_PROMPT] = prompt }
     }
 }

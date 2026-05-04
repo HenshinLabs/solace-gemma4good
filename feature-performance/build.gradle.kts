@@ -7,7 +7,7 @@ plugins {
 }
 
 android {
-    namespace = "com.masterllm.feature.chat"
+    namespace = "com.masterllm.feature.performance"
     compileSdk = libs.versions.compileSdk.get().toInt()
 
     defaultConfig {
@@ -30,14 +30,9 @@ android {
 
 dependencies {
     implementation(project(":core-domain"))
-    implementation(project(":core-data"))
-    implementation(project(":core-ollama"))
-    implementation(project(":runtime-gguf"))
-    implementation(project(":runtime-imagegen"))
-    implementation(project(":runtime-safetensors"))
     implementation(project(":core-ui"))
+    implementation(project(":runtime-gguf"))
 
-    // Compose
     implementation(platform(libs.compose.bom))
     implementation(libs.compose.ui)
     implementation(libs.compose.ui.graphics)
@@ -47,30 +42,22 @@ dependencies {
     implementation(libs.compose.ui.tooling.preview)
     debugImplementation(libs.compose.ui.tooling)
 
-    // Navigation
     implementation(libs.navigation.compose)
 
-    // Hilt
     implementation(libs.hilt.android)
     ksp(libs.hilt.compiler)
     implementation(libs.hilt.navigation.compose)
 
-    // Lifecycle
     implementation(libs.lifecycle.runtime.compose)
     implementation(libs.lifecycle.viewmodel.compose)
 
-    // Coroutines
     implementation(libs.coroutines.core)
     implementation(libs.coroutines.android)
 
-    // Timber
     implementation(libs.timber)
 
-    // Testing
     testImplementation(libs.junit5.api)
     testRuntimeOnly(libs.junit5.engine)
     testImplementation(libs.mockk)
     testImplementation(libs.coroutines.test)
-    testImplementation(libs.turbine)
-    testImplementation(libs.truth)
 }

@@ -14,3 +14,14 @@
 # Keep Gson
 -keepattributes SerializedName
 -keep class * { @com.google.gson.annotations.SerializedName <fields>; }
+
+# Suppress warnings for missing optional dependencies
+-dontwarn com.google.api.client.http.**
+-dontwarn com.google.api.client.http.javanet.**
+-dontwarn org.joda.time.**
+
+# Keep Ollama model classes (Gson deserialization)
+-keep class com.masterllm.core.ollama.model.** { *; }
+
+# Keep InferencePerformanceTracker (reflection)
+-keep class com.masterllm.runtime.gguf.InferencePerformanceTracker$LiveStats { *; }

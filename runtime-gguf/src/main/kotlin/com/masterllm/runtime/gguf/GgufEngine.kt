@@ -26,6 +26,9 @@ class GgufEngine @Inject constructor(
         @Volatile
         private var loadedNativeLibrary: String = "unloaded"
 
+        @Volatile
+        private var initError: Throwable? = null
+
         init {
             val logTag = GgufEngine::class.java.simpleName
 
@@ -86,11 +89,14 @@ class GgufEngine @Inject constructor(
             }
 
             if (lastError != null) {
-                throw UnsatisfiedLinkError(
-                    "Unable to load GGUF native runtime. Tried: ${candidateLibraries.distinct().joinToString()}"
-                )
+                initError = lastError
+                Log.e(logTag, "Unable to load GGUF native runtime. Tried: ${candidateLibraries.distinct().joinToString()}")
             }
         }
+
+        fun isAvailable(): Boolean = initError == null && loadedNativeLibrary != "unloaded"
+
+        fun getInitError(): String? = initError?.message
 
         private fun getCPUFeatures(): String {
             return try {
@@ -111,11 +117,159 @@ class GgufEngine @Inject constructor(
         const val DEFAULT_CHAT_TEMPLATE = "{% for message in messages %}{% if loop.first and messages[0]['role'] != 'system' %}{{ '<|im_start|>system\\nYou are a helpful AI assistant.\\n<|im_end|>\\n' }}{% endif %}{{'<|im_start|>' + message['role'] + '\\n' + message['content'] + '<|im_end|>\\n'}}{% endfor %}{% if add_generation_prompt %}{{ '<|im_start|>assistant\\n' }}{% endif %}"
 
         fun getLoadedNativeLibraryName(): String = loadedNativeLibrary
+
+        fun getOptimalThreadCount(): Int {
+            val total = Runtime.getRuntime().availableProcessors()
+            return when {
+                isKryoCpu() -> maxOf(4, total - 1)
+                isDimensityCpu() -> maxOf(4, total - 2)
+                else -> {
+                    val perfCores = countPerformanceCores()
+                    if (perfCores > 0) maxOf(4, perfCores) else maxOf(4, total - 1)
+                }
+            }
+        }
+
+        private fun isKryoCpu(): Boolean {
+            return try {
+                val cpuInfo = File("/proc/cpuinfo").readText()
+                cpuInfo.contains("Kryo") || cpuInfo.contains("Hardware\t: Qualcomm")
+            } catch (e: Exception) {
+                false
+            }
+        }
+
+        private fun isDimensityCpu(): Boolean {
+            return try {
+                val cpuInfo = File("/proc/cpuinfo").readText()
+                cpuInfo.contains("Dimensity") || cpuInfo.contains("Hardware\t: MT")
+            } catch (e: Exception) {
+                false
+            }
+        }
+
+        private fun countPerformanceCores(): Int {
+            return try {
+                val cpuInfo = File("/proc/cpuinfo").readText()
+                val coreTypes = detectCoreTypes(cpuInfo)
+                coreTypes.count { it == CoreType.PERFORMANCE }
+            } catch (e: Exception) {
+                0
+            }
+        }
+
+        enum class CoreType { PERFORMANCE, EFFICIENCY, UNKNOWN }
+
+        fun detectArchitecture(): String {
+            return try {
+                val cpuInfo = File("/proc/cpuinfo").readText()
+                val partIds = detectCoreTypes(cpuInfo)
+                val perfCount = partIds.count { it == CoreType.PERFORMANCE }
+                val effCount = partIds.count { it == CoreType.EFFICIENCY }
+                when {
+                    isKryoCpu() -> "Qualcomm Kryo ($perfCount P-cores + $effCount E-cores)"
+                    isDimensityCpu() -> "MediaTek Dimensity ($perfCount P-cores + $effCount E-cores)"
+                    else -> {
+                        val brand = cpuInfo.substringAfter("Processor")
+                            .substringAfter(":")
+                            .substringBefore("\n")
+                            .trim()
+                        brand.ifBlank { "ARM ($perfCount P-cores + $effCount E-cores)" }
+                    }
+                }
+            } catch (e: Exception) {
+                "Unknown"
+            }
+        }
+
+        private fun detectCoreTypes(cpuInfo: String): List<CoreType> {
+            val partIds = Regex("CPU part\\s*:\\s*(0x[0-9a-fA-F]+)").findAll(cpuInfo)
+                .map { it.groupValues[1] }
+                .toList()
+                .ifEmpty {
+                    Regex("CPU variant\\s*:\\s*(0x[0-9a-fA-F]+)").findAll(cpuInfo)
+                        .map { it.groupValues[1] }
+                        .toList()
+                }
+
+            if (partIds.isEmpty()) return emptyList()
+
+            return partIds.map { part ->
+                when (part.uppercase()) {
+                    // Cortex-A55, A53, A510, A520 (efficiency)
+                    "0xD05", "0xD03", "0xD46", "0xD4E" -> CoreType.EFFICIENCY
+                    // Cortex-A57, A72, A73, A75 (big - older)
+                    "0xD07", "0xD08", "0xD09", "0xD0A" -> CoreType.PERFORMANCE
+                    // Cortex-A76, A77, A78 (big - mid gen)
+                    "0xD0B", "0xD0D", "0xD0E" -> CoreType.PERFORMANCE
+                    // Cortex-X1, X2, X3 (prime)
+                    "0xD44", "0xD4D", "0xD4F" -> CoreType.PERFORMANCE
+                    // Cortex-A715, A720, X4, X925 (latest)
+                    "0xD4A", "0xD4B", "0xD41", "0xD57" -> CoreType.PERFORMANCE
+                    else -> CoreType.UNKNOWN
+                }
+            }
+        }
+
+        fun detectKryoCores(cpuInfo: String): List<CoreType> {
+            if (!cpuInfo.contains("Kryo")) return emptyList()
+            val parts = cpuInfo.split("\n\n")
+            val coreTypes = mutableListOf<CoreType>()
+            for (part in parts) {
+                if (!part.contains("Kryo") && !part.contains("CPU part")) continue
+                val partMatch = Regex("CPU part\\s*:\\s*(0x[0-9a-fA-F]+)").find(part)
+                if (partMatch != null) {
+                    val partId = partMatch.groupValues[1].uppercase()
+                    coreTypes += when (partId) {
+                        // Kryo Silver (A55-based)
+                        "0xD03", "0xD05" -> CoreType.EFFICIENCY
+                        // Kryo Gold (A76/A78-based)
+                        "0xD0B", "0xD0D", "0xD0E" -> CoreType.PERFORMANCE
+                        // Kryo Prime (X1/X2-based)
+                        "0xD44", "0xD4D" -> CoreType.PERFORMANCE
+                        else -> CoreType.UNKNOWN
+                    }
+                }
+            }
+            return coreTypes
+        }
     }
     
     private var nativePtr = 0L
     private var isLoaded = false
     private val nativeOpsMutex = Mutex()
+
+    @Volatile
+    private var tokensGenerated = 0
+    @Volatile
+    private var generationStartTime = 0L
+    @Volatile
+    private var generationEndTime = 0L
+
+    fun getLiveTokensPerSecond(): Float {
+        val generated = tokensGenerated
+        val startTime = generationStartTime
+        if (startTime == 0L || generated == 0) return 0f
+        val elapsed = (System.nanoTime() - startTime) / 1_000_000f
+        return if (elapsed > 0) (generated / elapsed) * 1000f else 0f
+    }
+
+    fun getFinalTokensPerSecond(): Float {
+        val generated = tokensGenerated
+        val startTime = generationStartTime
+        val endTime = if (generationEndTime != 0L) generationEndTime else System.nanoTime()
+        if (startTime == 0L || generated == 0) return 0f
+        val elapsed = (endTime - startTime) / 1_000_000f
+        return if (elapsed > 0) (generated / elapsed) * 1000f else 0f
+    }
+
+    fun getTokensGenerated(): Int = tokensGenerated
+
+    fun getGenerationElapsedMs(): Long {
+        val startTime = generationStartTime
+        if (startTime == 0L) return 0L
+        return ((if (generationEndTime != 0L) generationEndTime else System.nanoTime()) - startTime) / 1_000_000L
+    }
     
 /**
 * Loads a GGUF model from the given path.
@@ -144,11 +298,11 @@ val resolvedGpuLayers = if (gpuAccelerationEnabled) {
 0
 }
 
-val autoThreads = if (params.numThreads <= 0) {
-minOf(Runtime.getRuntime().availableProcessors(), 4)
-} else {
-params.numThreads
-}
+        val autoThreads = if (params.numThreads <= 0) {
+            getOptimalThreadCount()
+        } else {
+            params.numThreads
+        }
 
 val actualNBatch = if (params.nBatch > 0) params.nBatch else actualContextSize.toInt()
 val actualNUbatch = if (params.nUbatch > 0) params.nUbatch else minOf(actualNBatch, 512)
@@ -270,6 +424,10 @@ throw IllegalStateException("Failed to load model")
             val handle = verifyHandle()
             startCompletion(handle, query)
 
+            tokensGenerated = 0
+            generationStartTime = System.nanoTime()
+            generationEndTime = 0L
+
             var emittedTokens = 0
             try {
                 while (currentCoroutineContext().isActive && emittedTokens < budget) {
@@ -279,10 +437,12 @@ throw IllegalStateException("Failed to load model")
                         else -> if (piece.isNotEmpty()) {
                             emit(piece)
                             emittedTokens += 1
+                            tokensGenerated = emittedTokens
                         }
                     }
                 }
             } finally {
+                generationEndTime = System.nanoTime()
                 stopCompletion(handle)
             }
         }
@@ -304,6 +464,10 @@ throw IllegalStateException("Failed to load model")
             val handle = verifyHandle()
             startCompletion(handle, query)
 
+            tokensGenerated = 0
+            generationStartTime = System.nanoTime()
+            generationEndTime = 0L
+
             val response = StringBuilder()
             var emittedTokens = 0
 
@@ -318,9 +482,11 @@ throw IllegalStateException("Failed to load model")
                 ) {
                     response.append(piece)
                     emittedTokens += 1
+                    tokensGenerated = emittedTokens
                     piece = completionLoop(handle)
                 }
             } finally {
+                generationEndTime = System.nanoTime()
                 stopCompletion(handle)
             }
 

@@ -1,5 +1,6 @@
 package com.masterllm.feature.image.gen
 
+import android.content.Context
 import android.graphics.Bitmap
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -10,6 +11,7 @@ import com.masterllm.core.domain.repository.ModelRepository
 import com.masterllm.runtime.imagegen.ImageGenEngine
 import com.masterllm.runtime.imagegen.ImageGenProgress
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -52,6 +54,7 @@ sealed interface ImageGenAction {
 class ImageGenViewModel @Inject constructor(
 	private val modelRepository: ModelRepository,
 	private val imageGenEngine: ImageGenEngine,
+	@ApplicationContext private val appContext: Context,
 ) : ViewModel() {
 
 	private val _uiState = MutableStateFlow(ImageGenUiState())
@@ -149,9 +152,14 @@ class ImageGenViewModel @Inject constructor(
 	private suspend fun ensureImageEngineLoaded(model: LlmModel) {
 		if (loadedModelId == model.id && imageGenEngine.isAvailable()) return
 
-		val modelPath = model.localPath ?: "/data/models/${model.fileName}"
+		val modelPath = model.localPath ?: modelFallbackPath(model.fileName)
 		imageGenEngine.loadModel(modelPath).getOrElse { throw it }
 		loadedModelId = model.id
+	}
+
+	private fun modelFallbackPath(fileName: String): String {
+		val defaultDir = appContext.getExternalFilesDir(null)?.absolutePath ?: appContext.filesDir.absolutePath
+		return "$defaultDir/models/$fileName"
 	}
 
 	private suspend fun resolveSelectedModel(): LlmModel? {
