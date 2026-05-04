@@ -10,7 +10,10 @@ import retrofit2.http.*
  */
 interface HuggingFaceApi {
 
-    /** Search models by query. */
+    /** Search models by query.
+     *  @param full When true, returns full model info including siblings and config.
+     *  @param config When true, returns model config card data.
+     */
     @GET("api/models")
     suspend fun searchModels(
         @Query("search") query: String,
@@ -19,12 +22,18 @@ interface HuggingFaceApi {
         @Query("direction") direction: String = "-1",
         @Query("limit") limit: Int = 20,
         @Query("offset") offset: Int = 0,
+        @Query("full") full: Boolean = true,
+        @Query("config") config: Boolean = true,
     ): List<HfModelResponse>
 
-    /** Get model info by repo ID (e.g., "TheBloke/Llama-2-7B-GGUF"). */
+    /** Get model info by repo ID (e.g., "TheBloke/Llama-2-7B-GGUF").
+     *  @param full When true, returns full model info including siblings and config.
+     */
     @GET("api/models/{repoId}")
     suspend fun getModelInfo(
         @Path("repoId", encoded = true) repoId: String,
+        @Query("full") full: Boolean = true,
+        @Query("config") config: Boolean = true,
     ): HfModelResponse
 
     /** Preferred token validation endpoint. */

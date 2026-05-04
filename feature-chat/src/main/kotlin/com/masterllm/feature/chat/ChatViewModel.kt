@@ -112,6 +112,7 @@ data class ChatUiState(
     val ollamaConnected: Boolean = false,
     val ollamaModels: List<OllamaModelInfo> = emptyList(),
     val ollamaSelectedModel: String = "",
+    val pendingImageAttachment: String? = null,
 )
 
 sealed interface ChatAction {
@@ -140,6 +141,8 @@ sealed interface ChatAction {
     data object ToggleBackend : ChatAction
     data object CheckOllamaConnection : ChatAction
     data class SelectOllamaModel(val modelName: String) : ChatAction
+    data class AttachImage(val imagePath: String) : ChatAction
+    data object ClearImageAttachment : ChatAction
 }
 
 @HiltViewModel
@@ -175,65 +178,86 @@ class ChatViewModel @Inject constructor(
     private val engineMutex = runtimeCoordinator.engineMutex
 
     init {
-        // Watch chat conversations
+        // Watch chat conversations (independent)
         viewModelScope.launch {
             conversationRepository.getConversationsByMode(ConversationMode.CHAT).collect { convos ->
                 _uiState.update { it.copy(conversations = convos) }
             }
         }
-        // Watch downloaded models
+
+        // Read settings FIRST, then watch models to avoid race conditions
         viewModelScope.launch {
-            modelRepository.getDownloadedModels().collect { models ->
-                val filtered = models.filter {
-                    it.downloadState == DownloadState.DOWNLOADED &&
-                        (
-                            it.format == ModelFormat.GGUF ||
-                                it.format == ModelFormat.SAFETENSORS ||
-                                it.format == ModelFormat.DIFFUSERS
-                            )
-                }
-                var selectedModelId: String? = null
-                _uiState.update { state ->
-                    val selected = state.selectedModelId?.takeIf { selectedId ->
-                        filtered.any { it.id == selectedId }
-                    } ?: filtered.firstOrNull { it.format == ModelFormat.GGUF }?.id
-                    ?: filtered.firstOrNull { it.format == ModelFormat.SAFETENSORS }?.id
-                    ?: filtered.firstOrNull()?.id
-                    selectedModelId = selected
-                    state.copy(
-                        availableModels = filtered,
-                        selectedModelId = selected,
-                    )
-                }
-                selectedModelId?.let { selected ->
-                    val runtime = _uiState.value.modelRuntime
-                    if (runtime.modelId != selected || runtime.status == ModelLoadStatus.ERROR) {
-                        probeSelectedModel(selected, force = false)
+            // 1. Read initial settings synchronously before any model loads
+            val initialThreadCount = settingsRepository.getDefaultThreadCount().first()
+            val initialGpuEnabled = settingsRepository.getGpuAccelerationEnabled().first()
+            gpuAccelerationEnabled = initialGpuEnabled
+            val normalizedThreads = initialThreadCount.coerceAtLeast(1)
+            val desiredGpuLayers = resolveDesiredGpuLayers()
+
+            _uiState.update { state ->
+                state.copy(
+                    inferenceParams = state.inferenceParams.copy(numThreads = normalizedThreads),
+                    modelRuntime = state.modelRuntime.copy(
+                        threadCount = normalizedThreads,
+                        contextSize = state.inferenceParams.contextSize ?: 2048,
+                        gpuAccelerationEnabled = initialGpuEnabled,
+                        gpuOffloadLayers = desiredGpuLayers,
+                        offloadSummary = buildOffloadSummary(gpuEnabled = initialGpuEnabled, gpuLayers = desiredGpuLayers),
+                    ),
+                )
+            }
+
+            // 2. Now watch downloaded models (settings are already applied)
+            launch {
+                modelRepository.getDownloadedModels().collect { models ->
+                    val filtered = models.filter {
+                        it.downloadState == DownloadState.DOWNLOADED &&
+                            (
+                                it.format == ModelFormat.GGUF ||
+                                    it.format == ModelFormat.SAFETENSORS ||
+                                    it.format == ModelFormat.DIFFUSERS
+                                )
+                    }
+                    var selectedModelId: String? = null
+                    _uiState.update { state ->
+                        val selected = state.selectedModelId?.takeIf { selectedId ->
+                            filtered.any { it.id == selectedId }
+                        } ?: filtered.firstOrNull { it.format == ModelFormat.GGUF }?.id
+                        ?: filtered.firstOrNull { it.format == ModelFormat.SAFETENSORS }?.id
+                        ?: filtered.firstOrNull()?.id
+                        selectedModelId = selected
+                        state.copy(
+                            availableModels = filtered,
+                            selectedModelId = selected,
+                        )
+                    }
+                    selectedModelId?.let { selected ->
+                        val runtime = _uiState.value.modelRuntime
+                        if (runtime.modelId != selected || runtime.status == ModelLoadStatus.ERROR) {
+                            probeSelectedModel(selected, force = false)
+                        }
                     }
                 }
             }
-        }
-        viewModelScope.launch {
+
+            // 3. Continue watching settings for live changes
             combine(
                 settingsRepository.getDefaultThreadCount(),
                 settingsRepository.getGpuAccelerationEnabled(),
             ) { threadCount, gpuEnabled -> threadCount to gpuEnabled }
                 .collect { (threadCount, gpuEnabled) ->
                     gpuAccelerationEnabled = gpuEnabled
-                    val normalizedThreads = threadCount.coerceAtLeast(1)
-                    val desiredGpuLayers = resolveDesiredGpuLayers()
-                    // Update inference params with thread count
+                    val threads = threadCount.coerceAtLeast(1)
+                    val layers = resolveDesiredGpuLayers()
                     _uiState.update { state ->
                         state.copy(
-                            inferenceParams = state.inferenceParams.copy(
-                                numThreads = normalizedThreads,
-                            ),
+                            inferenceParams = state.inferenceParams.copy(numThreads = threads),
                             modelRuntime = state.modelRuntime.copy(
-                                threadCount = normalizedThreads,
+                                threadCount = threads,
                                 contextSize = state.inferenceParams.contextSize ?: 2048,
                                 gpuAccelerationEnabled = gpuEnabled,
-                                gpuOffloadLayers = desiredGpuLayers,
-                                offloadSummary = buildOffloadSummary(gpuEnabled = gpuEnabled, gpuLayers = desiredGpuLayers),
+                                gpuOffloadLayers = layers,
+                                offloadSummary = buildOffloadSummary(gpuEnabled = gpuEnabled, gpuLayers = layers),
                             ),
                         )
                     }
@@ -274,6 +298,8 @@ class ChatViewModel @Inject constructor(
             ChatAction.ToggleBackend -> toggleBackend()
             ChatAction.CheckOllamaConnection -> checkOllamaConnection()
             is ChatAction.SelectOllamaModel -> selectOllamaModel(action.modelName)
+            is ChatAction.AttachImage -> _uiState.update { it.copy(pendingImageAttachment = action.imagePath) }
+            ChatAction.ClearImageAttachment -> _uiState.update { it.copy(pendingImageAttachment = null) }
         }
     }
 
@@ -610,17 +636,21 @@ class ChatViewModel @Inject constructor(
 
             _uiState.update { it.copy(inputText = "", currentConversation = convo, error = null) }
 
+            val pendingImage = _uiState.value.pendingImageAttachment
+
             if (selectedModel.format == ModelFormat.DIFFUSERS) {
                 val userMsg = Message(
                     id = UUID.randomUUID().toString(),
                     conversationId = convo.id,
                     role = MessageRole.USER,
                     content = text,
+                    attachedImagePath = pendingImage,
                 )
                 conversationRepository.addMessage(userMsg)
 
                 generateImageResponse(conversation = convo, userText = text, imageModel = selectedModel)
 
+                _uiState.update { it.copy(pendingImageAttachment = null) }
                 if (convo.title == "New Conversation") {
                     val title = text.take(40) + if (text.length > 40) "…" else ""
                     conversationRepository.updateConversation(convo.copy(title = title))
@@ -633,6 +663,7 @@ class ChatViewModel @Inject constructor(
                     isGenerating = true,
                     streamingText = "",
                     generationStatus = "Loading model...",
+                    pendingImageAttachment = null,
                 )
             }
 
@@ -649,6 +680,7 @@ class ChatViewModel @Inject constructor(
                     conversationId = convo.id,
                     role = MessageRole.USER,
                     content = text,
+                    attachedImagePath = pendingImage,
                 )
                 conversationRepository.addMessage(userMsg)
 

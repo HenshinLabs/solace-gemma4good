@@ -468,13 +468,15 @@ class MarketplaceViewModelTest {
             direction: String,
             limit: Int,
             offset: Int,
+            full: Boolean,
+            config: Boolean,
         ): List<HfModelResponse> {
             searchQueries += query
             pagedSearchResponses[query to offset]?.let { return it }
             return searchResponses[query] ?: emptyList()
         }
 
-        override suspend fun getModelInfo(repoId: String): HfModelResponse {
+        override suspend fun getModelInfo(repoId: String, full: Boolean, config: Boolean): HfModelResponse {
             return modelInfos[repoId] ?: error("Missing model info for $repoId")
         }
 

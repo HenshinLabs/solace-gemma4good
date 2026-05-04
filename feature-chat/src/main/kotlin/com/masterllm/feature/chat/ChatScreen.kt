@@ -1,6 +1,8 @@
 package com.masterllm.feature.chat
 
 import android.graphics.BitmapFactory
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -25,6 +27,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -291,9 +294,12 @@ modelMenuExpanded = false
             ChatInputBar(
                 text = state.inputText,
                 isGenerating = state.isGenerating,
+                pendingImageAttachment = state.pendingImageAttachment,
                 onTextChange = { onAction(ChatAction.InputChanged(it)) },
                 onSend = { onAction(ChatAction.SendMessage) },
                 onStop = { onAction(ChatAction.StopGeneration) },
+                onAttachImage = { onAction(ChatAction.AttachImage(it)) },
+                onClearImage = { onAction(ChatAction.ClearImageAttachment) },
                 onApplyTaskTemplate = {
                     onAction(
                         ChatAction.ApplyTaskTemplate(
@@ -926,11 +932,30 @@ private val quickTaskTemplates = listOf(
 private fun ChatInputBar(
     text: String,
     isGenerating: Boolean,
+    pendingImageAttachment: String?,
     onTextChange: (String) -> Unit,
     onSend: () -> Unit,
     onStop: () -> Unit,
+    onAttachImage: (String) -> Unit,
+    onClearImage: () -> Unit,
     onApplyTaskTemplate: (QuickTaskTemplate) -> Unit,
 ) {
+    val context = LocalContext.current
+    val imagePicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent(),
+    ) { uri ->
+        uri?.let {
+            // Copy to app storage for persistence
+            val inputStream = context.contentResolver.openInputStream(it)
+            val destFile = java.io.File(context.filesDir, "chat_attachments/${System.currentTimeMillis()}.jpg")
+            destFile.parentFile?.mkdirs()
+            inputStream?.use { input ->
+                destFile.outputStream().use { output -> input.copyTo(output) }
+            }
+            onAttachImage(destFile.absolutePath)
+        }
+    }
+
     Surface(
         shadowElevation = 8.dp,
         color = MaterialTheme.colorScheme.surface,
@@ -941,6 +966,36 @@ private fun ChatInputBar(
                 .padding(horizontal = 16.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
+            // Pending image attachment preview
+            pendingImageAttachment?.let { imagePath ->
+                val bitmap = remember(imagePath) {
+                    BitmapFactory.decodeFile(imagePath)?.asImageBitmap()
+                }
+                bitmap?.let {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Image(
+                            bitmap = it,
+                            contentDescription = "Attached image",
+                            modifier = Modifier
+                                .size(64.dp)
+                                .clip(RoundedCornerShape(8.dp)),
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            text = "Image attached",
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.weight(1f),
+                        )
+                        IconButton(onClick = onClearImage) {
+                            Icon(Icons.Default.Close, contentDescription = "Remove image")
+                        }
+                    }
+                }
+            }
+
             LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 items(quickTaskTemplates, key = { it.title }) { template ->
                     AssistChip(
@@ -959,6 +1014,13 @@ private fun ChatInputBar(
             }
 
             Row(verticalAlignment = Alignment.CenterVertically) {
+                IconButton(
+                    onClick = { imagePicker.launch("image/*") },
+                    enabled = !isGenerating,
+                ) {
+                    Icon(Icons.Default.Image, contentDescription = "Attach image")
+                }
+                Spacer(Modifier.width(4.dp))
                 OutlinedTextField(
                     value = text,
                     onValueChange = onTextChange,
@@ -981,7 +1043,7 @@ private fun ChatInputBar(
                 } else {
                     FilledIconButton(
                         onClick = onSend,
-                        enabled = text.isNotBlank(),
+                        enabled = text.isNotBlank() || pendingImageAttachment != null,
                     ) {
                         Icon(Icons.Default.Send, contentDescription = "Send")
                     }

@@ -150,9 +150,11 @@ class AuthViewModelTest {
             direction: String,
             limit: Int,
             offset: Int,
+            full: Boolean,
+            config: Boolean,
         ): List<HfModelResponse> = emptyList()
 
-        override suspend fun getModelInfo(repoId: String): HfModelResponse = HfModelResponse(id = repoId)
+        override suspend fun getModelInfo(repoId: String, full: Boolean, config: Boolean): HfModelResponse = HfModelResponse(id = repoId)
 
         override suspend fun whoamiV2(auth: String): HfWhoamiResponse {
             lastAuthHeader = auth

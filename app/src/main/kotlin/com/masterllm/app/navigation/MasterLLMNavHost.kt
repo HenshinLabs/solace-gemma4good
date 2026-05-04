@@ -50,6 +50,7 @@ object Routes {
     const val PERFORMANCE = "performance"
     const val TASK_TEMPLATES = "task_templates"
     const val OLLAMA_EXPLORER = "ollama_explorer"
+    const val VOICE = "voice"
 }
 
 /** Bottom navigation tab definitions. */
@@ -61,6 +62,7 @@ enum class TopLevelDestination(
     HOME(Routes.HOME, Icons.Default.Home, "Home"),
     CHAT(Routes.CHAT, Icons.Default.Person, "Chat"),
     MARKETPLACE(Routes.MARKETPLACE, Icons.Default.Search, "Explore"),
+    VOICE(Routes.VOICE, Icons.Default.Mic, "Voice"),
     SETTINGS(Routes.SETTINGS, Icons.Default.Settings, "Settings"),
 }
 
@@ -186,6 +188,9 @@ fun MasterLLMApp(modifier: Modifier = Modifier) {
                     onNavigateBack = { navController.popBackStack() },
                     modifier = Modifier.fillMaxSize(),
                 )
+            }
+            composable(Routes.VOICE) {
+                VoiceScreen(modifier = Modifier.fillMaxSize())
             }
         }
     }

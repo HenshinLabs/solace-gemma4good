@@ -80,6 +80,82 @@ class SafetensorsEngine @Inject constructor() {
         return loadedModel?.tensors?.any { it.name == tensorName } == true
     }
 
+    /**
+     * Read tensor data as a FloatArray. Supports F32, F16 (converted to F32), and BF16 (converted to F32).
+     * Returns null if tensor not found or dtype is unsupported.
+     */
+    fun readTensorFloats(tensorName: String): FloatArray? {
+        val model = loadedModel ?: return null
+        val tensor = model.tensors.find { it.name == tensorName } ?: return null
+        val file = File(model.path)
+        if (!file.exists()) return null
+
+        return try {
+            RandomAccessFile(file, "r").use { raf ->
+                val numElements = tensor.shape.fold(1L) { acc, v -> acc * v }
+                when (tensor.dtype.lowercase()) {
+                    "f32" -> {
+                        val bytes = ByteArray(tensor.byteSize.toInt())
+                        raf.seek(tensor.byteOffsetStart)
+                        raf.readFully(bytes)
+                        val buf = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
+                        FloatArray(numElements.toInt()) { buf.float }
+                    }
+                    "f16" -> {
+                        val bytes = ByteArray(tensor.byteSize.toInt())
+                        raf.seek(tensor.byteOffsetStart)
+                        raf.readFully(bytes)
+                        val buf = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
+                        FloatArray(numElements.toInt()) {
+                            val half = buf.short
+                            halfToFloat(half)
+                        }
+                    }
+                    "bf16" -> {
+                        val bytes = ByteArray(tensor.byteSize.toInt())
+                        raf.seek(tensor.byteOffsetStart)
+                        raf.readFully(bytes)
+                        val buf = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
+                        FloatArray(numElements.toInt()) {
+                            val raw = buf.short.toInt() and 0xFFFF
+                            bfloat16ToFloat(raw)
+                        }
+                    }
+                    else -> null
+                }
+            }
+        } catch (e: Exception) {
+            Timber.e(e, "SafetensorsEngine: Failed to read tensor $tensorName")
+            null
+        }
+    }
+
+    /** Get tensor shape without reading data. */
+    fun getTensorShape(tensorName: String): List<Long>? {
+        return loadedModel?.tensors?.find { it.name == tensorName }?.shape
+    }
+
+    /** List all available tensor names. */
+    fun listTensors(): List<String> {
+        return loadedModel?.tensors?.map { it.name } ?: emptyList()
+    }
+
+    private fun halfToFloat(half: Short): Float {
+        val h = half.toInt() and 0xFFFF
+        val sign = (h shr 15) and 0x1
+        val exp = (h shr 10) and 0x1F
+        val mant = h and 0x3FF
+        return when (exp) {
+            0 -> if (mant == 0) 0f else (mant / 1024.0f) * Math.pow(2.0, -14.0).toFloat()
+            31 -> if (mant == 0) (if (sign == 1) Float.NEGATIVE_INFINITY else Float.POSITIVE_INFINITY) else Float.NaN
+            else -> (mant / 1024.0f + 1.0f) * Math.pow(2.0, (exp - 15).toDouble()).toFloat()
+        } * if (sign == 1) -1f else 1f
+    }
+
+    private fun bfloat16ToFloat(raw: Int): Float {
+        return Float.fromBits(raw shl 16)
+    }
+
     private fun parseModel(file: File): ModelInfo {
         RandomAccessFile(file, "r").use { raf ->
             val fileSize = raf.length()
