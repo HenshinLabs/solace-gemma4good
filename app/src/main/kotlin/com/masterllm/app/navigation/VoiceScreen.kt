@@ -9,9 +9,11 @@ import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.util.Log
+import kotlinx.coroutines.launch
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.*
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -40,11 +42,12 @@ fun VoiceScreen(modifier: Modifier = Modifier) {
     // KittenTTS engine
     val kittenTts = remember { mutableStateOf<KittenTtsEngine?>(null) }
     var kittenReady by remember { mutableStateOf(false) }
+    var kittenSpeaking by remember { mutableStateOf(false) }
 
     // Initialize KittenTTS
     LaunchedEffect(Unit) {
-        val engine = KittenTtsEngine(context)
-        kittenReady = engine.initialize()
+        val engine = KittenTtsEngine()
+        kittenReady = engine.initialize(context)
         if (kittenReady) {
             kittenTts.value = engine
             Log.i(TAG, "KittenTTS ready")
@@ -77,6 +80,9 @@ fun VoiceScreen(modifier: Modifier = Modifier) {
             kittenTts.value?.destroy()
         }
     }
+
+    // Coroutine scope for asynchronous operations
+    val scope = rememberCoroutineScope()
 
     // Speech recognizer state
     val speechRecognizer = remember {
@@ -127,7 +133,7 @@ fun VoiceScreen(modifier: Modifier = Modifier) {
                         onClick = { selectedMode = VoiceMode.TEXT_TO_SPEECH },
                         shape = SegmentedButtonDefaults.itemShape(1, 2),
                     ) {
-                        Icon(Icons.Default.VolumeUp, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Icon(Icons.AutoMirrored.Filled.VolumeUp, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.size(4.dp))
                         Text("Text to Speech")
                     }
@@ -157,7 +163,7 @@ fun VoiceScreen(modifier: Modifier = Modifier) {
                                 trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .menuAnchor(),
+                                            .menuAnchor(MenuAnchorType.PrimaryNotEditable),
                             )
                             ExposedDropdownMenu(
                                 expanded = expanded,
@@ -361,9 +367,10 @@ fun VoiceScreen(modifier: Modifier = Modifier) {
                                 Spacer(modifier = Modifier.height(12.dp))
                                 Button(
                                     onClick = {
-                                        if (isSpeaking) {
+                                        if (isSpeaking || kittenSpeaking) {
                                             if (selectedModel == "KittenTTS (Embedded)") {
                                                 kittenTts.value?.stop()
+                                                kittenSpeaking = false
                                             } else {
                                                 ttsEngine.value?.stop()
                                             }
@@ -373,9 +380,12 @@ fun VoiceScreen(modifier: Modifier = Modifier) {
                                             val useKitten = selectedModel == "KittenTTS (Embedded)" && kittenReady
                                             if (useKitten) {
                                                 ttsStatus = null
-                                                val success = kittenTts.value?.speak(ttsText) ?: false
-                                                isSpeaking = success
-                                                ttsStatus = if (success) "Speaking..." else "KittenTTS error"
+                                                kittenSpeaking = true
+                                                scope.launch {
+                                                    val success = kittenTts.value?.speak(ttsText) ?: false
+                                                    kittenSpeaking = false
+                                                    ttsStatus = if (success) "Finished" else "KittenTTS error"
+                                                }
                                             } else {
                                                 val tts = ttsEngine.value
                                                 if (tts == null) {
@@ -400,14 +410,15 @@ fun VoiceScreen(modifier: Modifier = Modifier) {
                                     },
                                     modifier = Modifier.fillMaxWidth(),
                                     enabled = ttsText.isNotBlank() && (ttsEngine.value != null || (selectedModel == "KittenTTS (Embedded)" && kittenReady)),
-                                ) {
-                                    Icon(
-                                        if (isSpeaking) Icons.Default.Stop else Icons.Default.VolumeUp,
-                                        contentDescription = null,
-                                    )
-                                    Spacer(Modifier.size(8.dp))
-                                    Text(if (isSpeaking) "Stop" else "Speak")
-                                }
+                                    ) {
+                                        val currentlySpeaking = isSpeaking || kittenSpeaking
+                                        Icon(
+                                            if (currentlySpeaking) Icons.Default.Stop else Icons.AutoMirrored.Filled.VolumeUp,
+                                            contentDescription = null,
+                                        )
+                                        Spacer(Modifier.size(8.dp))
+                                        Text(if (currentlySpeaking) "Stop" else "Speak")
+                                    }
                                 if (ttsStatus != null) {
                                     Spacer(modifier = Modifier.height(8.dp))
                                     Text(

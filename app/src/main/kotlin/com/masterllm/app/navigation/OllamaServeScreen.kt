@@ -70,6 +70,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.BufferedReader
 import java.io.InputStreamReader
+import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 
 data class OllamaServeState(
@@ -111,6 +112,7 @@ class OllamaServeViewModel @Inject constructor() : ViewModel() {
                 processBuilder.redirectErrorStream(true)
 
                 val process = processBuilder.start()
+                val startTime = System.nanoTime()
                 serverProcess = process
 
                 logThread = Thread {
@@ -124,13 +126,15 @@ class OllamaServeViewModel @Inject constructor() : ViewModel() {
                             }
                         }
                     } catch (e: Exception) {
-                        _state.update {
-                            it.copy(logs = it.logs + "Log reader error: ${e.message}")
+                        if (e.message?.contains("Stream closed") != true) {
+                            _state.update {
+                                it.copy(logs = it.logs + "Log reader error: ${e.message}")
+                            }
                         }
                     }
                 }.apply { isDaemon = true; start() }
 
-                Thread.sleep(1000)
+                kotlinx.coroutines.delay(1500)
 
                 if (process.isAlive) {
                     _state.update {
@@ -138,7 +142,7 @@ class OllamaServeViewModel @Inject constructor() : ViewModel() {
                     }
                     refreshLoadedModels()
                 } else {
-                    val exitCode = process.waitFor()
+                    val exitCode = if (process.isAlive) 0 else process.waitFor()
                     _state.update {
                         it.copy(
                             isStarting = false,
@@ -160,8 +164,11 @@ class OllamaServeViewModel @Inject constructor() : ViewModel() {
     fun stopServer() {
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                serverProcess?.destroy()
-                serverProcess?.waitFor()
+                serverProcess?.let { process ->
+                    process.destroy()
+                    process.waitFor(5, java.util.concurrent.TimeUnit.SECONDS)
+                    process.destroyForcibly()
+                }
                 serverProcess = null
                 logThread?.interrupt()
                 logThread = null

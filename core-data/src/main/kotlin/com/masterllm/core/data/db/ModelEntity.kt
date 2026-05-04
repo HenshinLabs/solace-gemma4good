@@ -106,8 +106,8 @@ data class RoleplaySessionEntity(
     primaryKeys = ["characterName", "sessionId"]
 )
 data class CharacterVisualCacheEntity(
-    @NonNull val characterName: String,
-    @NonNull val sessionId: String,
+    val characterName: String,
+    val sessionId: String,
     val anchorPrompt: String = "",
     val lastImagePath: String? = null,
     val updatedAt: Long = System.currentTimeMillis(),

@@ -8,22 +8,22 @@ import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
-import java.nio.ShortBuffer
+import java.nio.ByteBuffer
+import java.util.zip.ZipInputStream
+import javax.inject.Inject
+import javax.inject.Singleton
 
-/**
- * KittenTTS - Ultra-lightweight neural TTS engine using ONNX Runtime.
- * Model: KittenML/kitten-tts-nano-0.8 (23MB ONNX + 3MB voices)
- * Runs fully offline on device.
- */
-class KittenTtsEngine(private val context: Context) {
+@Singleton
+class KittenTtsEngine @Inject constructor() {
 
     private var engine: OnnxTtsEngine? = null
     private var sampleRate = 24000
+    private var currentAudioTrack: AudioTrack? = null
 
-    suspend fun initialize(): Boolean = withContext(Dispatchers.IO) {
+    suspend fun initialize(context: Context): Boolean = withContext(Dispatchers.IO) {
         try {
-            val modelFile = copyAssetToInternal("kittentts/kitten_tts_nano_v0_8.onnx")
-            val voicesFile = copyAssetToInternal("kittentts/voices.npz")
+            val modelFile = copyAssetToInternal(context, "kittentts/kitten_tts_nano_v0_8.onnx")
+            val voicesFile = copyAssetToInternal(context, "kittentts/voices.npz")
 
             engine = OnnxTtsEngine(
                 modelPath = modelFile.absolutePath,
@@ -39,13 +39,14 @@ class KittenTtsEngine(private val context: Context) {
 
     fun isAvailable(): Boolean = engine != null
 
-    fun speak(
+    suspend fun speak(
         text: String,
         voiceIndex: Int = 0,
         speed: Float = 1.0f,
-    ): Boolean {
-        return try {
-            val eng = engine ?: return false
+    ): Boolean = withContext(Dispatchers.Default) {
+        try {
+            val eng = engine ?: return@withContext false
+            stop()
             val audioData = eng.generateAudio(text, voiceIndex, speed)
             playAudio(audioData, sampleRate)
             true
@@ -56,24 +57,35 @@ class KittenTtsEngine(private val context: Context) {
     }
 
     fun stop() {
-        // AudioTrack cleanup handled by playAudio completion
+        try {
+            currentAudioTrack?.let { track ->
+                if (track.playState == AudioTrack.PLAYSTATE_PLAYING) {
+                    track.pause()
+                    track.flush()
+                }
+                track.release()
+            }
+        } catch (e: Exception) {
+            // Ignore cleanup errors
+        }
+        currentAudioTrack = null
     }
 
     fun destroy() {
+        stop()
         engine?.close()
         engine = null
     }
 
     private fun playAudio(audioData: ShortArray, sampleRate: Int) {
+        stop()
         val bufferSize = AudioTrack.getMinBufferSize(
             sampleRate,
             AudioFormat.CHANNEL_OUT_MONO,
             AudioFormat.ENCODING_PCM_16BIT,
         )
-
-        val buffer = ShortBuffer.wrap(audioData)
-        val byteBuffer = java.nio.ByteBuffer.allocate(audioData.size * 2)
-        byteBuffer.asShortBuffer().put(buffer)
+        val byteBuffer = ByteBuffer.allocate(audioData.size * 2)
+        byteBuffer.asShortBuffer().put(audioData)
 
         val audioTrack = AudioTrack.Builder()
             .setAudioAttributes(
@@ -93,17 +105,17 @@ class KittenTtsEngine(private val context: Context) {
             .setTransferMode(AudioTrack.MODE_STATIC)
             .build()
 
+        currentAudioTrack = audioTrack
         audioTrack.write(byteBuffer.array(), 0, byteBuffer.capacity())
         audioTrack.play()
     }
 
-    private fun copyAssetToInternal(assetPath: String): File {
+    private fun copyAssetToInternal(context: Context, assetPath: String): File {
         val parts = assetPath.split("/")
         val fileName = parts.last()
         val targetDir = File(context.filesDir, "tts_models/${parts.dropLast(1).joinToString("/")}")
         targetDir.mkdirs()
         val targetFile = File(targetDir, fileName)
-
         if (!targetFile.exists()) {
             context.assets.open(assetPath).use { input ->
                 targetFile.outputStream().use { output ->
@@ -120,22 +132,20 @@ class KittenTtsEngine(private val context: Context) {
     ) : AutoCloseable {
         private val env = ai.onnxruntime.OrtEnvironment.getEnvironment("kitten-tts")
         private val session: ai.onnxruntime.OrtSession
-        private val voices: Map<String, FloatArray>
+        private val voices: List<FloatArray>
 
         init {
             val opts = ai.onnxruntime.OrtSession.SessionOptions()
             opts.setIntraOpNumThreads(2)
             opts.setInterOpNumThreads(2)
             session = env.createSession(modelPath, opts)
-
-            // Load voices
             voices = loadVoices(voicesPath)
         }
 
         fun generateAudio(text: String, voiceIdx: Int, speed: Float): ShortArray {
             val tokens = tokenizeText(text)
+            if (tokens.isEmpty()) return ShortArray(0)
 
-            // Prepare input tensors using Buffer API (ONNX Runtime Android compatible)
             val inputIds = tokens.map { it.toLong() }.toLongArray()
             val inputShape = longArrayOf(1, tokens.size.toLong())
             val inputBuffer = java.nio.LongBuffer.wrap(inputIds)
@@ -150,6 +160,8 @@ class KittenTtsEngine(private val context: Context) {
 
             val output = results.get("audio") as ai.onnxruntime.OnnxTensor
             val totalSamples = output.info.shape[2].toInt()
+            if (totalSamples <= 0) return ShortArray(0)
+
             val floatBuffer = output.getFloatBuffer()
             val audioFloats = FloatArray(totalSamples)
             floatBuffer.get(audioFloats)
@@ -166,10 +178,8 @@ class KittenTtsEngine(private val context: Context) {
         }
 
         private fun selectVoice(index: Int): ai.onnxruntime.OnnxTensor {
-            val voiceKeys = voices.keys.toList()
-            val embedding = if (voiceKeys.isNotEmpty()) {
-                val key = voiceKeys[index.coerceIn(0, voiceKeys.size - 1)]
-                voices[key] ?: FloatArray(256)
+            val embedding = if (voices.isNotEmpty()) {
+                voices[index.coerceIn(0, voices.size - 1)]
             } else {
                 FloatArray(256)
             }
@@ -177,37 +187,59 @@ class KittenTtsEngine(private val context: Context) {
             return ai.onnxruntime.OnnxTensor.createTensor(env, embedBuffer, longArrayOf(1, 256))
         }
 
-        private fun loadVoices(path: String): Map<String, FloatArray> {
+        private fun loadVoices(path: String): List<FloatArray> {
             return try {
-                // Parse NPZ file (simple reader for the voices file)
-                val file = java.io.RandomAccessFile(path, "r")
-                val magic = ByteArray(4)
-                file.readFully(magic)
-                val headerLen = file.readInt()
-                val header = ByteArray(headerLen)
-                file.readFully(header)
-                val content = java.util.zip.Inflater().let { inflater ->
-                    inflater.setInput(header)
-                    val output = ByteArray(headerLen * 10)
-                    val len = inflater.inflate(output)
-                    inflater.end()
-                    output.copyOf(len)
+                val result = mutableListOf<FloatArray>()
+                val file = File(path)
+                if (!file.exists()) {
+                    Log.w(TAG, "Voices file not found: $path")
+                    return emptyList()
                 }
-                file.close()
-
-                // Parse NPZ content (simplified)
-                val result = mutableMapOf<String, FloatArray>()
-                val contentStr = String(content, Charsets.UTF_8)
-                val voiceMatch = Regex("'([^']+)'").findAll(contentStr)
-                voiceMatch.forEachIndexed { idx, match ->
-                    val name = match.groupValues[1]
-                    val embedding = FloatArray(256) { (idx + 1).toFloat() / 256f }
-                    result[name] = embedding
+                val zip = ZipInputStream(file.inputStream().buffered())
+                var entry = zip.nextEntry
+                while (entry != null) {
+                    if (entry.name.endsWith(".npy") || entry.name.contains("voice")) {
+                        val bytes = zip.readBytes()
+                        val floats = parseNpyFloats(bytes)
+                        if (floats.isNotEmpty() && floats.size >= 256) {
+                            result.add(floats)
+                        }
+                    }
+                    entry = zip.nextEntry
                 }
+                zip.close()
+                Log.i(TAG, "Loaded ${result.size} voices from NPZ")
                 result
             } catch (e: Exception) {
                 Log.w(TAG, "Failed to load voices: ${e.message}")
-                mapOf("default" to FloatArray(256) { 0f })
+                // Create default voice embeddings as fallback
+                List(5) { FloatArray(256) { (it + 1).toFloat() / 256f } }
+            }
+        }
+
+        private fun parseNpyFloats(data: ByteArray): FloatArray {
+            return try {
+                val headerLen = java.nio.ByteBuffer.wrap(data, 8, 4).order(java.nio.ByteOrder.LITTLE_ENDIAN).int
+                val header = String(data, 12, headerLen - 8, Charsets.US_ASCII)
+                val shapeMatch = Regex("\\(\\s*([0-9]+)\\s*,?\\s*([0-9]+)?\\s*\\)").find(header)
+                val totalElements = if (shapeMatch != null) {
+                    val dim1 = shapeMatch.groupValues[1].toIntOrNull() ?: 1
+                    val dim2 = shapeMatch.groupValues[2].toIntOrNull() ?: 1
+                    dim1 * dim2
+                } else {
+                    data.size / 4 - 2
+                }
+                val dataOffset = data.size - totalElements * 4
+                if (dataOffset < 0) return FloatArray(0)
+                val floatData = FloatArray(totalElements)
+                java.nio.ByteBuffer.wrap(data, dataOffset, totalElements * 4)
+                    .order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                    .asFloatBuffer()
+                    .get(floatData)
+                floatData
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to parse NPY: ${e.message}")
+                FloatArray(0)
             }
         }
 
