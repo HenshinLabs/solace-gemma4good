@@ -122,17 +122,13 @@ class GgufEngine @Inject constructor(
 
         fun getOptimalThreadCount(): Int {
             val totalCores = Runtime.getRuntime().availableProcessors()
-            val perfCores = countPerformanceCores()
-            return if (perfCores > 0) perfCores else totalCores.coerceAtMost(8)
-        }
-
-        fun getAllThreadCount(): Int {
-            return Runtime.getRuntime().availableProcessors().coerceAtMost(8)
+            return totalCores.coerceIn(1, 16)
         }
 
         fun getPerformanceBatchSize(): Int {
             val threads = getOptimalThreadCount()
             return when {
+                threads >= 12 -> 1024
                 threads >= 8 -> 512
                 threads >= 4 -> 256
                 else -> 128
@@ -142,6 +138,7 @@ class GgufEngine @Inject constructor(
         fun getPerformanceUbatchSize(): Int {
             val threads = getOptimalThreadCount()
             return when {
+                threads >= 12 -> 512
                 threads >= 8 -> 256
                 threads >= 4 -> 128
                 else -> 64
@@ -324,7 +321,7 @@ val resolvedGpuLayers = if (gpuAccelerationEnabled) {
 }
 
         val autoThreads = if (params.numThreads <= 0) {
-            getAllThreadCount()
+            getOptimalThreadCount()
         } else {
             params.numThreads
         }

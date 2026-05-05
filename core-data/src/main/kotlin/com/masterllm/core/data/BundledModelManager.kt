@@ -76,7 +76,7 @@ object BundledModelManager {
         "repeatPenalty" to 1.0f,
         "contextSize" to 8192,
         "maxTokens" to 4096,
-        "numThreads" to Runtime.getRuntime().availableProcessors(),
+        "numThreads" to Runtime.getRuntime().availableProcessors().coerceIn(1, 16),
         "nGpuLayers" to 99,
         "nBatch" to 256,
         "nUbatch" to 128,
