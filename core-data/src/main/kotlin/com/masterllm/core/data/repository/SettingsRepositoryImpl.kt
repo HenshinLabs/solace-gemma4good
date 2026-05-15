@@ -51,6 +51,11 @@ class SettingsRepositoryImpl @Inject constructor(
         val OLLAMA_ENABLED = booleanPreferencesKey("ollama_enabled")
         val OLLAMA_KEEP_ALIVE = stringPreferencesKey("ollama_keep_alive")
         val OLLAMA_SYSTEM_PROMPT = stringPreferencesKey("ollama_system_prompt")
+        val SHOW_THINKING = booleanPreferencesKey("show_thinking")
+        val THINKING_BUDGET = intPreferencesKey("thinking_budget")
+        val CONTEXT_LENGTH = intPreferencesKey("context_length")
+        val VOICE_OUTPUT_ENABLED = booleanPreferencesKey("voice_output_enabled")
+        val VOICE_INPUT_ENABLED = booleanPreferencesKey("voice_input_enabled")
     }
 
     // ─── HF Token ──────────────────────────────────────────────
@@ -183,5 +188,50 @@ class SettingsRepositoryImpl @Inject constructor(
 
     override suspend fun setOllamaSystemPrompt(prompt: String) {
         context.dataStore.edit { it[Keys.OLLAMA_SYSTEM_PROMPT] = prompt }
+    }
+
+    // ─── Show Thinking ───────────────────────────────────────────
+
+    override fun getShowThinking(): Flow<Boolean> =
+        context.dataStore.data.map { it[Keys.SHOW_THINKING] ?: true }
+
+    override suspend fun setShowThinking(show: Boolean) {
+        context.dataStore.edit { it[Keys.SHOW_THINKING] = show }
+    }
+
+    // ─── Thinking Budget ─────────────────────────────────────────
+
+    override fun getThinkingBudget(): Flow<Int> =
+        context.dataStore.data.map { it[Keys.THINKING_BUDGET] ?: 512 }
+
+    override suspend fun setThinkingBudget(tokens: Int) {
+        context.dataStore.edit { it[Keys.THINKING_BUDGET] = tokens }
+    }
+
+    // ─── Context Length ──────────────────────────────────────────
+
+    override fun getContextLength(): Flow<Int> =
+        context.dataStore.data.map { it[Keys.CONTEXT_LENGTH] ?: 16384 }
+
+    override suspend fun setContextLength(length: Int) {
+        context.dataStore.edit { it[Keys.CONTEXT_LENGTH] = length }
+    }
+
+    // ─── Voice Output ────────────────────────────────────────────
+
+    override fun getVoiceOutputEnabled(): Flow<Boolean> =
+        context.dataStore.data.map { it[Keys.VOICE_OUTPUT_ENABLED] ?: true }
+
+    override suspend fun setVoiceOutputEnabled(enabled: Boolean) {
+        context.dataStore.edit { it[Keys.VOICE_OUTPUT_ENABLED] = enabled }
+    }
+
+    // ─── Voice Input ─────────────────────────────────────────────
+
+    override fun getVoiceInputEnabled(): Flow<Boolean> =
+        context.dataStore.data.map { it[Keys.VOICE_INPUT_ENABLED] ?: true }
+
+    override suspend fun setVoiceInputEnabled(enabled: Boolean) {
+        context.dataStore.edit { it[Keys.VOICE_INPUT_ENABLED] = enabled }
     }
 }

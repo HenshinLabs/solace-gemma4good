@@ -25,3 +25,15 @@
 
 # Keep InferencePerformanceTracker (reflection)
 -keep class com.masterllm.runtime.gguf.InferencePerformanceTracker$LiveStats { *; }
+
+# Keep Solace model download and inference classes
+-keep class com.masterllm.app.solace.** { *; }
+
+# Keep JNI-called methods
+-keepclasseswithmembernames class * {
+    native <methods>;
+}
+
+# Keep Kotlin coroutines
+-keepnames class kotlinx.coroutines.internal.MainDispatcherFactory {}
+-keepnames class kotlinx.coroutines.CoroutineExceptionHandler {}

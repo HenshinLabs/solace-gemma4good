@@ -101,7 +101,7 @@ class ToolRegistry @Inject constructor(
     }
 
     fun buildSystemPrompt(): String = """
-You are OpenClaw Agent — an AI assistant running on Android with Qwen3.5-0.8B.
+You are OpenClaw Agent — an AI assistant running on Android with Gemma 4 E2B.
 You have access to the following tools:
 
 <tools>

@@ -113,10 +113,16 @@ class GgufEngine @Inject constructor(
         private fun supportsArm64V8a(): Boolean = 
             Build.SUPPORTED_ABIS[0]?.equals("arm64-v8a") == true
 
-        const val DEFAULT_CONTEXT_SIZE: Long = 1024L
+        const val DEFAULT_CONTEXT_SIZE: Long = 16384L
         const val DEFAULT_MAX_TOKENS = 4096
+
+        // Generic ChatML fallback for non-Gemma models
         const val DEFAULT_CHAT_TEMPLATE = "{% for message in messages %}{% if loop.first and messages[0]['role'] != 'system' %}{{ '<|im_start|>system\\nYou are a helpful AI assistant.\\n<|im_end|>\\n' }}{% endif %}{{'<|im_start|>' + message['role'] + '\\n' + message['content'] + '<|im_end|>\\n'}}{% endfor %}{% if add_generation_prompt %}{{ '<|im_start|>assistant\\n' }}{% endif %}"
-        const val QWEN35_CHAT_TEMPLATE = "{% if not messages %}{{ raise_exception('No messages provided.') }}{% endif %}{% if messages[0]['role'] == 'system' %}{{ '<|im_start|>system\\n' + messages[0]['content'] + '<|im_end|>\\n' }}{% endif %}{% for message in messages %}{% if message['role'] == 'system' %}{% if not loop.first %}{{ raise_exception('System message must be at the beginning.') }}{% endif %}{% elif message['role'] == 'user' %}{{ '<|im_start|>user\\n' + message['content'] + '<|im_end|>\\n' }}{% elif message['role'] == 'assistant' %}{{ '<|im_start|>assistant\\n' + message['content'] + '<|im_end|>\\n' }}{% endif %}{% endfor %}{% if add_generation_prompt %}{{ '<|im_start|>assistant\\n<think>\\n\\n</think>\\n\\n' }}{% endif %}"
+
+        // Gemma 4 chat template — uses <|turn>/<turn|> delimiters.
+        // REVIEW: llama.cpp reads the template from GGUF metadata; this is a fallback
+        // in case the metadata template is missing.
+        const val GEMMA4_CHAT_TEMPLATE = "{% for message in messages %}{% if message['role'] == 'system' %}{{ '<|turn>' + message['role'] + '\\n' + message['content'] + '\\n<turn|>\\n' }}{% elif message['role'] == 'user' %}{{ '<|turn>' + message['role'] + '\\n' + message['content'] + '<turn|>\\n' }}{% elif message['role'] == 'model' or message['role'] == 'assistant' %}{{ '<|turn>model\\n' + message['content'] + '<turn|>\\n' }}{% endif %}{% endfor %}{% if add_generation_prompt %}{{ '<|turn>model\\n' }}{% endif %}"
 
         fun getLoadedNativeLibraryName(): String = loadedNativeLibrary
 

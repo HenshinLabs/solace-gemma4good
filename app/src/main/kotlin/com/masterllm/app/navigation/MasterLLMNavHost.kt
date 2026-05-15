@@ -36,9 +36,11 @@ import com.masterllm.feature.roleplay.RoleplayScreen
 import com.masterllm.feature.performance.PerformanceMonitorScreen
 import com.masterllm.feature.settings.OllamaModelExplorerScreen
 import com.masterllm.feature.settings.SettingsScreen
+import com.masterllm.app.solace.ModelDownloadScreen
 
 /** Route identifiers for each top-level destination. */
 object Routes {
+    const val MODEL_DOWNLOAD = "model_download"
     const val HOME = "home"
     const val CHAT = "chat"
     const val MARKETPLACE = "marketplace"
@@ -78,7 +80,7 @@ fun MasterLLMApp(modifier: Modifier = Modifier) {
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentDestination = navBackStackEntry?.destination
 
-    // Show bottom bar only on top-level destinations
+    // Show bottom bar only on top-level destinations (not on download screen)
     val topLevelRoutes = TopLevelDestination.entries.map { it.route }.toSet()
     val showBottomBar = currentDestination?.route in topLevelRoutes
 
@@ -117,11 +119,23 @@ fun MasterLLMApp(modifier: Modifier = Modifier) {
     ) { innerPadding ->
         NavHost(
             navController = navController,
-            startDestination = Routes.HOME,
+            startDestination = Routes.MODEL_DOWNLOAD,
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding),
         ) {
+            // ── Model download gate ──────────────────────────────
+            composable(Routes.MODEL_DOWNLOAD) {
+                ModelDownloadScreen(
+                    onModelReady = {
+                        navController.navigate(Routes.HOME) {
+                            popUpTo(Routes.MODEL_DOWNLOAD) { inclusive = true }
+                        }
+                    },
+                    modifier = Modifier.fillMaxSize(),
+                )
+            }
+
             // ── Top-level tabs ──────────────────────────────────
             composable(Routes.HOME) {
                 HomeHubScreen(

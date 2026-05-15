@@ -98,4 +98,21 @@ interface SettingsRepository {
 
     fun getOllamaSystemPrompt(): Flow<String>
     suspend fun setOllamaSystemPrompt(prompt: String)
+
+    // ─── Solace / Gemma 4 Settings ─────────────────────────────
+
+    fun getShowThinking(): Flow<Boolean>
+    suspend fun setShowThinking(show: Boolean)
+
+    fun getThinkingBudget(): Flow<Int>
+    suspend fun setThinkingBudget(tokens: Int)
+
+    fun getContextLength(): Flow<Int>
+    suspend fun setContextLength(length: Int)
+
+    fun getVoiceOutputEnabled(): Flow<Boolean>
+    suspend fun setVoiceOutputEnabled(enabled: Boolean)
+
+    fun getVoiceInputEnabled(): Flow<Boolean>
+    suspend fun setVoiceInputEnabled(enabled: Boolean)
 }

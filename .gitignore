@@ -13,3 +13,5 @@ local.properties
 *.log
 .kotlin/
 *.gguf
+
+referenceprompt.txt

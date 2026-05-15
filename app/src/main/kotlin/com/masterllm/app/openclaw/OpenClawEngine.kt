@@ -148,9 +148,11 @@ class OpenClawEngine @Inject constructor(
         val sb = StringBuilder()
         for (msg in messages) {
             when (msg.role) {
-                "user" -> sb.append("<|im_start|>user\n${msg.content}\n<|im_end|>\n")
-                "assistant" -> sb.append("<|im_start|>assistant\n${msg.content}\n<|im_end|>\n")
-                "tool" -> sb.append("<|im_start|>user\n<tool_response>\n${msg.content}\n</tool_response>\n<|im_end|>\n")
+                // REVIEW: When the loaded model is not Gemma 4, these delimiters may differ.
+                // Consider reading the chat template from the model metadata at runtime.
+                "user" -> sb.append("<|turn>user\n${msg.content}<turn|>\n")
+                "assistant" -> sb.append("<|turn>model\n${msg.content}<turn|>\n")
+                "tool" -> sb.append("<|turn>user\n<tool_response>\n${msg.content}\n</tool_response><turn|>\n")
             }
         }
         return sb.toString()

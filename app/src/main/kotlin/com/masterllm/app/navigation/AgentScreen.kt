@@ -142,7 +142,7 @@ private fun WelcomeCard(state: com.masterllm.app.openclaw.AgentUiState) {
             )
             Spacer(Modifier.height(4.dp))
             Text(
-                text = "Qwen3.5-0.8B with multi-turn tool calling",
+                text = "Gemma 4 E2B with multi-turn tool calling",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
