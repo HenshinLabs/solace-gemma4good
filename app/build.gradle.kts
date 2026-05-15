@@ -46,8 +46,13 @@ android {
         applicationId = "com.masterllm.app"
         minSdk = libs.versions.minSdk.get().toInt()
         targetSdk = libs.versions.targetSdk.get().toInt()
-    versionCode = 27
-    versionName = "1.0.27"
+    versionCode = 28
+    versionName = "2.0.0"
+
+        // REVIEW: Update MODEL_DOWNLOAD_URL to point to your CDN for production.
+        buildConfigField("String", "MODEL_DOWNLOAD_URL", "\"https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_K_M.gguf\"")
+        buildConfigField("String", "MODEL_SHA256", "\"9378bc471710229ef165709b62e34bfb62231420ddaf6d729e727305b5b8672d\"")
+        buildConfigField("String", "MODEL_FILENAME", "\"gemma-4-E2B-it-Q4_K_M.gguf\"")
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -117,9 +122,9 @@ android.applicationVariants.all {
     outputs.all {
         @Suppress("DEPRECATION")
         val apkOutput = this as com.android.build.gradle.api.ApkVariantOutput
-        val normalizedVersion = versionName ?: "1.0.17"
+        val normalizedVersion = versionName ?: "2.0.0"
         val normalizedBuildType = buildType.name
-        apkOutput.outputFileName = "MasterLLM-v${normalizedVersion}-${normalizedBuildType}.apk"
+        apkOutput.outputFileName = "Solace-v${normalizedVersion}-${normalizedBuildType}.apk"
     }
 }
 

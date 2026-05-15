@@ -1207,6 +1207,10 @@ class ChatViewModel @Inject constructor(
 
     private fun sanitizeGeneratedText(raw: String): String {
         return raw
+            // Gemma 4 turn delimiters
+            .replace("<|turn>", "")
+            .replace("<turn|>", "")
+            // Legacy ChatML delimiters (for non-Gemma models)
             .replace("<|im_start|>", "")
             .replace("<|im_end|>", "")
             .replace("</s>", "")
@@ -1311,8 +1315,8 @@ class ChatViewModel @Inject constructor(
         val info = BundledModelManager.initialize(appContext) ?: return null
         return LlmModel(
             id = info.id,
-            repoId = "bundled/qwen3.5-0.8b",
-            fileName = "Qwen3.5-0.8B-Q4_K_M.gguf",
+            repoId = "google/gemma-4-E2B-it",
+            fileName = BundledModelManager.MODEL_FILENAME,
             displayName = info.displayName,
             format = ModelFormat.GGUF,
             sizeBytes = java.io.File(info.localPath).length(),

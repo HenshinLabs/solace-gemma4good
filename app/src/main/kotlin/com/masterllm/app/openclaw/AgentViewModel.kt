@@ -36,7 +36,7 @@ class AgentViewModel @Inject constructor(
     fun checkModelStatus() {
         _uiState.update { it.copy(
             modelReady = engine.isModelLoaded(),
-            statusMessage = if (engine.isModelLoaded()) "Qwen3.5 ready" else "Load model in Chat tab first"
+            statusMessage = if (engine.isModelLoaded()) "Gemma 4 E2B ready" else "Load model in Chat tab first"
         ) }
     }
 

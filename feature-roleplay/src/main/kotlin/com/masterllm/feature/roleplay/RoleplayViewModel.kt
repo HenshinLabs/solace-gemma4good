@@ -1029,6 +1029,10 @@ class RoleplayViewModel @Inject constructor(
 
     private fun sanitizeGeneratedText(raw: String): String {
         return raw
+            // Gemma 4 turn delimiters
+            .replace("<|turn>", "")
+            .replace("<turn|>", "")
+            // Legacy ChatML delimiters
             .replace("<|im_start|>", "")
             .replace("<|im_end|>", "")
             .replace("</s>", "")
