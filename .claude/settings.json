@@ -1,0 +1,9 @@
+{
+  "autoFix": {
+    "enabled": true,
+    "lint": "./gradlew lintDebug",
+    "test": "./gradlew testDebugUnitTest",
+    "maxRetries": 2,
+    "timeout": 300000
+  }
+}
