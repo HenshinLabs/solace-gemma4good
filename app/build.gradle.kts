@@ -46,8 +46,8 @@ android {
         applicationId = "com.masterllm.app"
         minSdk = libs.versions.minSdk.get().toInt()
         targetSdk = libs.versions.targetSdk.get().toInt()
-    versionCode = 28
-    versionName = "2.0.0"
+    versionCode = 29
+    versionName = "2.0.1"
 
         // REVIEW: Update MODEL_DOWNLOAD_URL to point to your CDN for production.
         buildConfigField("String", "MODEL_DOWNLOAD_URL", "\"https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_K_M.gguf\"")
