@@ -1,9 +1,11 @@
 package com.masterllm.feature.settings
 
+import android.content.Intent
+import android.net.Uri
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
@@ -15,45 +17,99 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.AccountCircle
-import androidx.compose.material.icons.filled.Cloud
-import androidx.compose.material.icons.filled.Image
-import androidx.compose.material.icons.filled.ModelTraining
-import androidx.compose.material.icons.filled.Security
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Phone
+import androidx.compose.material.icons.filled.Psychology
+import androidx.compose.material.icons.filled.RecordVoiceOver
 import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.Speed
+import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Slider
+import androidx.compose.material3.Snackbar
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
-import androidx.compose.material3.*
-import androidx.compose.material3.MenuAnchorType
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.masterllm.core.domain.model.ImageFrequency
 import com.masterllm.core.ui.components.GradientCard
+import java.io.File
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
     modifier: Modifier = Modifier,
-    onOpenAuth: () -> Unit = {},
-    onOpenModelManager: () -> Unit = {},
-    onOpenImageGen: () -> Unit = {},
-    onOpenPerformance: () -> Unit = {},
-    onOpenOllamaExplorer: () -> Unit = {},
-    onOpenOllamaServe: () -> Unit = {},
     viewModel: SettingsViewModel = hiltViewModel(),
 ) {
     val state = viewModel.uiState.collectAsStateWithLifecycle().value
+    val context = LocalContext.current
+
+    // Local state for inference and behavior toggles
+    var voiceEnabled by remember { mutableStateOf(true) }
+    var showThinking by remember { mutableStateOf(true) }
+    var temperature by remember { mutableFloatStateOf(0.7f) }
+    var topP by remember { mutableFloatStateOf(0.9f) }
+    var topK by remember { mutableFloatStateOf(40f) }
+    var contextLength by remember { mutableFloatStateOf(16384f) }
+    var contextCompactionEnabled by remember { mutableStateOf(true) }
+    var showDeleteDialog by remember { mutableStateOf(false) }
+
+    if (showDeleteDialog) {
+        AlertDialog(
+            onDismissRequest = { showDeleteDialog = false },
+            title = { Text("Delete Downloaded Model") },
+            text = {
+                Text(
+                    "This will permanently remove the downloaded model file from your device. " +
+                        "You can re-download it later from the marketplace."
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showDeleteDialog = false
+                        val modelDir = File(state.effectiveModelStoragePath)
+                        if (modelDir.exists()) {
+                            modelDir.listFiles()?.forEach { it.delete() }
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.error,
+                    ),
+                ) {
+                    Text("Delete")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteDialog = false }) {
+                    Text("Cancel")
+                }
+            },
+        )
+    }
 
     Scaffold(
         modifier = modifier,
@@ -71,153 +127,7 @@ fun SettingsScreen(
                 contentPadding = PaddingValues(start = 16.dp, top = 12.dp, end = 16.dp, bottom = 24.dp),
                 verticalArrangement = Arrangement.spacedBy(14.dp),
             ) {
-                item {
-                    SettingsSectionCard(
-                        icon = Icons.Default.AccountCircle,
-                        title = "Account & Access",
-                        subtitle = "Manage Hugging Face authentication for gated models",
-                    ) {
-                        Text(
-                            text = if (state.hfUsername.isBlank()) {
-                                "Not signed in to Hugging Face"
-                            } else {
-                                "Signed in as ${state.hfUsername}"
-                            },
-                            style = MaterialTheme.typography.bodyMedium,
-                        )
-                        Spacer(Modifier.height(10.dp))
-                        FilledTonalButton(onClick = onOpenAuth) {
-                            Icon(Icons.Default.Security, contentDescription = null)
-                            Spacer(Modifier.width(8.dp))
-                            Text("Manage Hugging Face Login")
-                        }
-                    }
-                }
-
-                item {
-                    SettingsSectionCard(
-                        icon = Icons.Default.ModelTraining,
-                        title = "Runtime & Performance",
-                        subtitle = "Tune inference speed, memory behavior, and acceleration",
-                    ) {
-                        LabeledSlider(
-                            title = "Default threads",
-                            description = "Higher values can improve speed but increase thermal and battery load.",
-                            valueText = state.defaultThreadCount.toString(),
-                            value = state.defaultThreadCount.toFloat(),
-                            valueRange = 1f..16f,
-                            onValueChange = { viewModel.onAction(SettingsAction.ThreadCountChanged(it.toInt())) },
-                        )
-
-                        Spacer(Modifier.height(8.dp))
-
-                        LabeledSlider(
-                            title = "Auto-compaction threshold",
-                            description = "Compaction starts when conversation context reaches this percentage.",
-                            valueText = "${state.autoCompactionThreshold}%",
-                            value = state.autoCompactionThreshold.toFloat(),
-                            valueRange = 50f..95f,
-                            onValueChange = { viewModel.onAction(SettingsAction.AutoCompactionChanged(it.toInt())) },
-                        )
-
-                        Spacer(Modifier.height(8.dp))
-
-                        SettingSwitchRow(
-                            title = "Enable GPU acceleration",
-                            subtitle = "When supported, model operations can run on native GPU paths.",
-                            checked = state.gpuAccelerationEnabled,
-                            onCheckedChange = { viewModel.onAction(SettingsAction.GpuAccelerationChanged(it)) },
-                        )
-
-                        Spacer(Modifier.height(12.dp))
-                        HorizontalDivider()
-                        Spacer(Modifier.height(12.dp))
-
-                        Button(
-                            onClick = onOpenPerformance,
-                            modifier = Modifier.fillMaxWidth(),
-                        ) {
-                            Icon(Icons.Default.Speed, contentDescription = null)
-                            Spacer(Modifier.width(8.dp))
-                            Text("Open Performance Monitor")
-                        }
-
-                        Spacer(Modifier.height(12.dp))
-                        HorizontalDivider()
-                        Spacer(Modifier.height(12.dp))
-
-                        Text(
-                            text = "GPU driver status",
-                            style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.SemiBold,
-                        )
-                        Spacer(Modifier.height(4.dp))
-                        Text(
-                            text = state.gpuDriverStatus,
-                            style = MaterialTheme.typography.bodyMedium,
-                        )
-                        Text(
-                            text = state.gpuDriverDetails,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-
-                        if (state.gpuValidationChecks.isNotEmpty()) {
-                            Spacer(Modifier.height(8.dp))
-                            Text(
-                                text = "Validation checks",
-                                style = MaterialTheme.typography.labelLarge,
-                                fontWeight = FontWeight.SemiBold,
-                            )
-                            Spacer(Modifier.height(4.dp))
-                            state.gpuValidationChecks.forEach { check ->
-                                Text(
-                                    text = "• $check",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                        }
-                    }
-                }
-
-                item {
-                    SettingsSectionCard(
-                        icon = Icons.Default.Image,
-                        title = "Roleplay & Images",
-                        subtitle = "Set default visual generation behavior",
-                    ) {
-                        FrequencyDropdown(
-                            selected = state.defaultImageFrequency,
-                            onSelect = { viewModel.onAction(SettingsAction.ImageFrequencyChanged(it)) },
-                        )
-
-                        Spacer(Modifier.height(8.dp))
-
-                        SettingSwitchRow(
-                            title = "Character consistency",
-                            subtitle = "Reuse character references for more stable visual identity.",
-                            checked = state.characterConsistencyEnabled,
-                            onCheckedChange = { viewModel.onAction(SettingsAction.CharacterConsistencyChanged(it)) },
-                        )
-
-                        Spacer(Modifier.height(12.dp))
-
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            OutlinedButton(onClick = onOpenModelManager, modifier = Modifier.weight(1f)) {
-                                Icon(Icons.Default.ModelTraining, contentDescription = null)
-                                Spacer(Modifier.width(8.dp))
-                                Text("Models")
-                            }
-                            OutlinedButton(onClick = onOpenImageGen, modifier = Modifier.weight(1f)) {
-                                Icon(Icons.Default.Image, contentDescription = null)
-                                Spacer(Modifier.width(8.dp))
-                                Text("Image Gen")
-                            }
-                        }
-                    }
-                }
-
+                // ── Appearance ─────────────────────────────────────
                 item {
                     SettingsSectionCard(
                         icon = Icons.Default.Settings,
@@ -231,82 +141,188 @@ fun SettingsScreen(
                     }
                 }
 
+                // ── Voice ──────────────────────────────────────────
                 item {
                     SettingsSectionCard(
-                        icon = Icons.Default.Cloud,
-                        title = "Ollama Server",
-                        subtitle = "Configure remote Ollama backend for chat inference",
+                        icon = Icons.Default.RecordVoiceOver,
+                        title = "Voice",
+                        subtitle = "Enable or disable text-to-speech output",
                     ) {
-                        OllamaSettingsSection(
-                            host = state.ollamaHost,
-                            enabled = state.ollamaEnabled,
-                            keepAlive = state.ollamaKeepAlive,
-                            systemPrompt = state.ollamaSystemPrompt,
-                            connectionStatus = state.ollamaConnectionStatus,
-                            connectionChecking = state.ollamaConnectionChecking,
-                            onHostChanged = { viewModel.onAction(SettingsAction.OllamaHostChanged(it)) },
-                            onEnabledChanged = { viewModel.onAction(SettingsAction.OllamaEnabledChanged(it)) },
-                            onKeepAliveChanged = { viewModel.onAction(SettingsAction.OllamaKeepAliveChanged(it)) },
-                            onSystemPromptChanged = { viewModel.onAction(SettingsAction.OllamaSystemPromptChanged(it)) },
-                            onTestConnection = { viewModel.onAction(SettingsAction.TestOllamaConnection) },
-                            onOpenOllamaExplorer = onOpenOllamaExplorer,
-                            onOpenOllamaServe = onOpenOllamaServe,
+                        SettingSwitchRow(
+                            title = "Voice output",
+                            subtitle = "Read assistant responses aloud using text-to-speech.",
+                            checked = voiceEnabled,
+                            onCheckedChange = { voiceEnabled = it },
                         )
                     }
                 }
 
+                // ── Show Thinking ──────────────────────────────────
                 item {
                     SettingsSectionCard(
-                        icon = Icons.Default.ModelTraining,
-                        title = "Storage",
-                        subtitle = "Choose where downloaded models are stored",
+                        icon = Icons.Default.Psychology,
+                        title = "Thinking",
+                        subtitle = "Control visibility of model reasoning steps",
                     ) {
-                        OutlinedTextField(
-                            value = state.modelStoragePath,
-                            onValueChange = { viewModel.onAction(SettingsAction.ModelStoragePathChanged(it)) },
+                        SettingSwitchRow(
+                            title = "Show thinking",
+                            subtitle = "Display the model's internal reasoning before the final answer.",
+                            checked = showThinking,
+                            onCheckedChange = { showThinking = it },
+                        )
+                    }
+                }
+
+                // ── Inference Parameters ───────────────────────────
+                item {
+                    SettingsSectionCard(
+                        icon = Icons.Default.Tune,
+                        title = "Inference Parameters",
+                        subtitle = "Fine-tune how the model generates text",
+                    ) {
+                        LabeledSlider(
+                            title = "Temperature",
+                            description = "Higher values produce more creative output; lower values are more focused.",
+                            valueText = String.format("%.2f", temperature),
+                            value = temperature,
+                            valueRange = 0f..2f,
+                            onValueChange = { temperature = it },
+                        )
+
+                        Spacer(Modifier.height(8.dp))
+
+                        LabeledSlider(
+                            title = "Top P",
+                            description = "Nucleus sampling threshold. Lower values restrict to more likely tokens.",
+                            valueText = String.format("%.2f", topP),
+                            value = topP,
+                            valueRange = 0f..1f,
+                            onValueChange = { topP = it },
+                        )
+
+                        Spacer(Modifier.height(8.dp))
+
+                        LabeledSlider(
+                            title = "Top K",
+                            description = "Limits sampling to the K most probable next tokens.",
+                            valueText = topK.toInt().toString(),
+                            value = topK,
+                            valueRange = 1f..100f,
+                            onValueChange = { topK = it },
+                        )
+
+                        Spacer(Modifier.height(8.dp))
+
+                        LabeledSlider(
+                            title = "Context Length",
+                            description = "Maximum number of tokens the model can consider at once.",
+                            valueText = contextLength.toInt().toString(),
+                            value = contextLength,
+                            valueRange = 2048f..131072f,
+                            onValueChange = { contextLength = it },
+                        )
+                    }
+                }
+
+                // ── Context Compaction ─────────────────────────────
+                item {
+                    SettingsSectionCard(
+                        icon = Icons.Default.Tune,
+                        title = "Context Compaction",
+                        subtitle = "Manage automatic conversation summarization",
+                    ) {
+                        SettingSwitchRow(
+                            title = "Automatic context compaction",
+                            subtitle = "Automatically summarize older messages when the context window fills up.",
+                            checked = contextCompactionEnabled,
+                            onCheckedChange = { contextCompactionEnabled = it },
+                        )
+                    }
+                }
+
+                // ── Delete Model ───────────────────────────────────
+                item {
+                    SettingsSectionCard(
+                        icon = Icons.Default.Delete,
+                        title = "Model Storage",
+                        subtitle = "Manage downloaded model files",
+                    ) {
+                        Text(
+                            text = "Downloaded model files can be several gigabytes. " +
+                                "Delete them to free up storage space.",
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                        Spacer(Modifier.height(12.dp))
+                        Button(
+                            onClick = { showDeleteDialog = true },
                             modifier = Modifier.fillMaxWidth(),
-                            label = { Text("Custom model storage path (optional)") },
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
-                            singleLine = true,
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.error,
+                            ),
+                        ) {
+                            Icon(Icons.Default.Delete, contentDescription = null)
+                            Spacer(Modifier.width(8.dp))
+                            Text("Delete Downloaded Model")
+                        }
+                    }
+                }
+
+                // ── About Solace ───────────────────────────────────
+                item {
+                    SettingsSectionCard(
+                        icon = Icons.Default.Info,
+                        title = "About Solace",
+                        subtitle = "Your mental health companion",
+                    ) {
+                        Text(
+                            text = "Version 2.0.2",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+
+                        Spacer(Modifier.height(16.dp))
+                        HorizontalDivider()
+                        Spacer(Modifier.height(16.dp))
+
+                        Text(
+                            text = "Crisis Helplines",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            text = "If you or someone you know is in crisis, please reach out:",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+
+                        Spacer(Modifier.height(12.dp))
+
+                        CrisisHelplineRow(
+                            label = "988 Suicide & Crisis Lifeline (US)",
+                            number = "988",
                         )
                         Spacer(Modifier.height(8.dp))
-                        Text(
-                            text = "Default path: ${state.defaultModelStoragePath}",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        CrisisHelplineRow(
+                            label = "iCall Counselling (India)",
+                            number = "9152987821",
                         )
-                        Text(
-                            text = "Effective path: ${state.effectiveModelStoragePath}",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        Spacer(Modifier.height(8.dp))
+                        CrisisHelplineRow(
+                            label = "Vandrevala Foundation (India)",
+                            number = "18602662345",
                         )
+
+                        Spacer(Modifier.height(16.dp))
+                        HorizontalDivider()
+                        Spacer(Modifier.height(16.dp))
+
                         Text(
-                            text = if (state.usingDefaultStoragePath) {
-                                "Using default app download folder"
-                            } else {
-                                "Using custom storage folder"
-                            },
-                            style = MaterialTheme.typography.bodySmall,
+                            text = "Your life has value. Help is available.",
+                            style = MaterialTheme.typography.bodyLarge,
+                            fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.primary,
                         )
-                        Spacer(Modifier.height(10.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Button(
-                                onClick = { viewModel.onAction(SettingsAction.SaveModelStoragePath) },
-                                modifier = Modifier.weight(1f),
-                            ) {
-                                Text("Save path")
-                            }
-                            OutlinedButton(
-                                onClick = {
-                                    viewModel.onAction(SettingsAction.ModelStoragePathChanged(""))
-                                    viewModel.onAction(SettingsAction.SaveModelStoragePath)
-                                },
-                                modifier = Modifier.weight(1f),
-                            ) {
-                                Text("Use default")
-                            }
-                        }
                     }
                 }
             }
@@ -328,6 +344,43 @@ fun SettingsScreen(
         }
     }
 }
+
+// ─── Crisis helpline row ────────────────────────────────────────────
+
+@Composable
+private fun CrisisHelplineRow(label: String, number: String) {
+    val context = LocalContext.current
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            Text(
+                text = number,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Spacer(Modifier.width(8.dp))
+        FilledTonalButton(
+            onClick = {
+                val intent = Intent(Intent.ACTION_DIAL).apply {
+                    data = Uri.parse("tel:$number")
+                }
+                context.startActivity(intent)
+            },
+        ) {
+            Icon(Icons.Default.Phone, contentDescription = "Call $number")
+        }
+    }
+}
+
+// ─── Section card ───────────────────────────────────────────────────
 
 @Composable
 private fun SettingsSectionCard(
@@ -359,6 +412,8 @@ private fun SettingsSectionCard(
         content()
     }
 }
+
+// ─── Labeled slider ─────────────────────────────────────────────────
 
 @Composable
 private fun LabeledSlider(
@@ -397,8 +452,10 @@ private fun LabeledSlider(
     )
 }
 
+// ─── Switch row ─────────────────────────────────────────────────────
+
 @Composable
-fun SettingSwitchRow(
+internal fun SettingSwitchRow(
     title: String,
     subtitle: String,
     checked: Boolean,
@@ -429,44 +486,7 @@ fun SettingSwitchRow(
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun FrequencyDropdown(
-    selected: ImageFrequency,
-    onSelect: (ImageFrequency) -> Unit,
-) {
-    var expanded by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
-
-    ExposedDropdownMenuBox(
-        expanded = expanded,
-        onExpandedChange = { expanded = !expanded },
-    ) {
-        OutlinedTextField(
-            value = selected.displayName,
-            onValueChange = {},
-            readOnly = true,
-            label = { Text("Default image frequency") },
-            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
-            modifier = Modifier
-                .menuAnchor(MenuAnchorType.PrimaryNotEditable)
-                .fillMaxWidth(),
-        )
-        ExposedDropdownMenu(
-            expanded = expanded,
-            onDismissRequest = { expanded = false },
-        ) {
-            ImageFrequency.entries.forEach { freq ->
-                DropdownMenuItem(
-                    text = { Text(freq.displayName) },
-                    onClick = {
-                        onSelect(freq)
-                        expanded = false
-                    },
-                )
-            }
-        }
-    }
-}
+// ─── Theme selector ─────────────────────────────────────────────────
 
 @Composable
 @OptIn(ExperimentalLayoutApi::class)
@@ -482,7 +502,6 @@ private fun ThemeSelector(
             "system" to "System",
             "light" to "Light",
             "dark" to "Dark",
-            "dynamic" to "Dynamic",
         ).forEach { (value, label) ->
             FilterChip(
                 selected = selected == value,
