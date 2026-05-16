@@ -3,8 +3,13 @@ package com.masterllm.app.openclaw
 import android.content.Context
 import android.util.Log
 import dagger.hilt.android.qualifiers.ApplicationContext
-import java.io.File
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import java.io.BufferedReader
+import java.io.InputStreamReader
+import java.net.HttpURLConnection
 import java.net.URL
+import java.net.URLEncoder
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -37,48 +42,126 @@ class ToolRegistry @Inject constructor(
     }
 
     private fun registerDefaultTools() {
+        registerTool(
+            "web_search",
+            "Search the web for current information. Use when you need to look up facts, current events, health information, or anything beyond your training data.",
+            mapOf("query" to "string (required)")
+        ) { params ->
+            val query = params["query"] ?: return@registerTool "Error: query required"
+            try {
+                webSearch(query)
+            } catch (e: Exception) {
+                "Error searching: ${e.message}"
+            }
+        }
         registerTool("fetch_url", "Fetch text content from a URL", mapOf("url" to "string (required)")) { params ->
-            val url = params["url"] ?: return@registerTool "Error: url required"
-            try { URL(url).readText().take(8000) } catch (e: Exception) { "Error: ${e.message}" }
-        }
-        registerTool("read_file", "Read contents of a file on device", mapOf("path" to "string (required)")) { params ->
-            val path = params["path"] ?: return@registerTool "Error: path required"
-            val file = File(path)
-            if (!file.exists()) return@registerTool "File not found: $path"
-            if (!file.canRead()) return@registerTool "Permission denied: $path"
-            try { file.readText().take(8000) } catch (e: Exception) { "Error: ${e.message}" }
-        }
-        registerTool("list_files", "List files in a directory", mapOf("path" to "string (required)")) { params ->
-            val path = params["path"] ?: return@registerTool "Error: path required"
-            val dir = File(path)
-            if (!dir.isDirectory) return@registerTool "Not a directory: $path"
-            try { dir.list()?.joinToString("\n")?.take(2000) ?: "Empty directory" } catch (e: Exception) { "Error: ${e.message}" }
-        }
-        registerTool("run_shell", "Execute a shell command", mapOf("command" to "string (required)")) { params ->
-            val cmd = params["command"] ?: return@registerTool "Error: command required"
+            val urlStr = params["url"] ?: return@registerTool "Error: url required"
             try {
-                val p = Runtime.getRuntime().exec(cmd)
-                val out = p.inputStream.bufferedReader().readText().take(5000)
-                val err = p.errorStream.bufferedReader().readText().take(2000)
-                buildString { if (out.isNotEmpty()) append("STDOUT:\n$out"); if (err.isNotEmpty()) { if (isNotEmpty()) append("\n\n"); append("STDERR:\n$err") }; if (isEmpty()) append("(no output)") }
-            } catch (e: Exception) { "Error: ${e.message}" }
-        }
-        registerTool("send_notification", "Send device notification", mapOf("title" to "string (required)", "message" to "string (required)")) { params ->
-            val title = params["title"] ?: return@registerTool "Error: title required"
-            val msg = params["message"] ?: return@registerTool "Error: message required"
-            try {
-                val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
-                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-                    nm.createNotificationChannel(android.app.NotificationChannel("openclaw", "OpenClaw", android.app.NotificationManager.IMPORTANCE_DEFAULT))
-                }
-                nm.notify(System.currentTimeMillis().toInt(), android.app.Notification.Builder(context, "openclaw").setContentTitle(title).setContentText(msg).setSmallIcon(android.R.drawable.ic_dialog_info).build())
-                "Notification sent"
+                val conn = URL(urlStr).openConnection() as HttpURLConnection
+                conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android) AppleWebKit/537.36")
+                conn.connectTimeout = 15000
+                conn.readTimeout = 15000
+                conn.inputStream.bufferedReader().use { it.readText().take(8000) }
             } catch (e: Exception) { "Error: ${e.message}" }
         }
         registerTool("current_time", "Get current date and time", emptyMap()) {
             java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.US).format(java.util.Date())
         }
     }
+
+    private suspend fun webSearch(query: String): String = withContext(Dispatchers.IO) {
+        val encodedQuery = URLEncoder.encode(query, "UTF-8")
+        val urlStr = "https://html.duckduckgo.com/html/?q=$encodedQuery"
+
+        val conn = URL(urlStr).openConnection() as HttpURLConnection
+        conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36")
+        conn.setRequestProperty("Accept", "text/html")
+        conn.setRequestProperty("Accept-Language", "en-US,en;q=0.9")
+        conn.connectTimeout = 15000
+        conn.readTimeout = 15000
+        conn.instanceFollowRedirects = true
+
+        val html = try {
+            conn.inputStream.bufferedReader().use { it.readText() }
+        } catch (e: Exception) {
+            return@withContext "No results found"
+        } finally {
+            conn.disconnect()
+        }
+
+        parseSearchResults(html, query)
+    }
+
+    private fun parseSearchResults(html: String, query: String): String {
+        val results = mutableListOf<SearchResult>()
+
+        val linkPattern = Regex("""<a rel="nofollow" class="result__a" href="([^"]*)"[^>]*>([\s\S]*?)</a>""")
+        val snippetPattern = Regex("""<a class="result__snippet"[^>]*>([\s\S]*?)</a>""")
+        val snippets = snippetPattern.findAll(html).toList()
+
+        for ((index, match) in linkPattern.findAll(html).withIndex()) {
+            if (results.size >= 5) break
+            val rawUrl = match.groupValues[1]
+            val title = match.groupValues[2]
+                .replace(Regex("<[^>]+>"), "")
+                .replace("&amp;", "&")
+                .replace("&lt;", "<")
+                .replace("&gt;", ">")
+                .replace("&quot;", "\"")
+                .replace("&#x27;", "'")
+                .replace("&#39;", "'")
+                .trim()
+
+            val snippet = if (index < snippets.size) {
+                snippets[index].groupValues[1]
+                    .replace(Regex("<[^>]+>"), "")
+                    .replace("&amp;", "&")
+                    .replace("&lt;", "<")
+                    .replace("&gt;", ">")
+                    .replace("&quot;", "\"")
+                    .replace("&#x27;", "'")
+                    .replace("&#39;", "'")
+                    .trim()
+            } else ""
+
+            val actualUrl = decodeDdgUrl(rawUrl)
+
+            if (title.isNotBlank() && actualUrl.isNotBlank()) {
+                results.add(SearchResult(title, snippet, actualUrl))
+            }
+        }
+
+        if (results.isEmpty()) {
+            return "No search results found for: $query"
+        }
+
+        return buildString {
+            appendLine("Search results for: \"$query\"")
+            appendLine()
+            results.forEachIndexed { i, result ->
+                appendLine("${i + 1}. ${result.title}")
+                if (result.snippet.isNotBlank()) appendLine("   ${result.snippet}")
+                appendLine("   URL: ${result.url}")
+                appendLine()
+            }
+        }
+    }
+
+    private fun decodeDdgUrl(rawUrl: String): String {
+        val uddgPattern = Regex("""[?&]uddg=([^&]+)""")
+        val match = uddgPattern.find(rawUrl)
+        return if (match != null) {
+            java.net.URLDecoder.decode(match.groupValues[1], "UTF-8")
+        } else {
+            rawUrl
+        }
+    }
+
+    private data class SearchResult(
+        val title: String,
+        val snippet: String,
+        val url: String,
+    )
 
     private fun registerTool(name: String, description: String, parameters: Map<String, String>, executor: suspend (Map<String, String>) -> String) {
         register(OpenClawTool(name, description, parameters, executor))
@@ -100,26 +183,27 @@ class ToolRegistry @Inject constructor(
         }
     }
 
-    fun buildSystemPrompt(): String = """
-You are OpenClaw Agent — an AI assistant running on Android with Gemma 4 E2B.
-You have access to the following tools:
-
-<tools>
-${buildToolsJson()}
-</tools>
-
-When you need to use a tool, respond with EXACTLY:
-<tool_call>
-<function=tool_name>
-<parameter=param_name>
-value
-</parameter>
-</function>
-</tool_call>
-
-After the tool returns, I will send you the result. Then decide the next step.
-If no tool is needed, respond normally.
-""".trimIndent()
+    fun buildSystemPrompt(): String = buildString {
+        appendLine("You are Solace Agent \u2014 a compassionate AI assistant running on Android with Gemma 4 E2B.")
+        appendLine("You have access to the following tools:")
+        appendLine()
+        appendLine("<tools>")
+        appendLine(buildToolsJson())
+        appendLine("</tools>")
+        appendLine()
+        appendLine("When you need to use a tool, respond with EXACTLY:")
+        val tc = "tool_call"
+        val fn = "function"
+        val pn = "parameter"
+        appendLine("<$tc>")
+        appendLine("<$fn=tool_name>")
+        appendLine("<$pn=param_name>")
+        appendLine("value")
+        appendLine("</$pn>")
+        appendLine("</$fn>")
+        appendLine("</$tc>")
+        appendLine()
+        appendLine("After the tool returns, I will send you the result. Then decide the next step.")
+        appendLine("If no tool is needed, respond normally.")
+    }
 }
-
-

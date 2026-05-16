@@ -1,23 +1,32 @@
 package com.masterllm.app.navigation
 
+import android.content.Intent
+import android.net.Uri
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavDestination.Companion.hierarchy
 import androidx.navigation.NavGraph.Companion.findStartDestination
@@ -25,62 +34,36 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
-import androidx.hilt.navigation.compose.hiltViewModel
-import com.masterllm.feature.auth.AuthScreen
 import com.masterllm.feature.chat.ChatScreen
-import com.masterllm.feature.chat.TaskTemplatesScreen
-import com.masterllm.feature.image.gen.ImageGenScreen
-import com.masterllm.feature.marketplace.MarketplaceScreen
-import com.masterllm.feature.model.manager.ModelManagerScreen
 import com.masterllm.feature.roleplay.RoleplayScreen
-import com.masterllm.feature.performance.PerformanceMonitorScreen
-import com.masterllm.feature.settings.OllamaModelExplorerScreen
 import com.masterllm.feature.settings.SettingsScreen
 import com.masterllm.app.solace.ModelDownloadScreen
 
-/** Route identifiers for each top-level destination. */
 object Routes {
     const val MODEL_DOWNLOAD = "model_download"
     const val HOME = "home"
     const val CHAT = "chat"
-    const val MARKETPLACE = "marketplace"
     const val ROLEPLAY = "roleplay"
-    const val IMAGE_GEN = "image_gen"
     const val SETTINGS = "settings"
-    const val AUTH = "auth"
-    const val MODEL_MANAGER = "model_manager"
-    const val PERFORMANCE = "performance"
-    const val TASK_TEMPLATES = "task_templates"
-    const val OLLAMA_EXPLORER = "ollama_explorer"
-    const val OLLAMA_SERVE = "ollama_serve"
-    const val VOICE = "voice"
-    const val AGENT = "agent"
 }
 
-/** Bottom navigation tab definitions. */
 enum class TopLevelDestination(
     val route: String,
     val icon: ImageVector,
     val label: String,
 ) {
     HOME(Routes.HOME, Icons.Default.Home, "Home"),
-    CHAT(Routes.CHAT, Icons.Default.Person, "Chat"),
-    MARKETPLACE(Routes.MARKETPLACE, Icons.Default.Search, "Explore"),
-    VOICE(Routes.VOICE, Icons.Default.Mic, "Voice"),
+    CHAT(Routes.CHAT, Icons.Default.Chat, "Chat"),
+    ROLEPLAY(Routes.ROLEPLAY, Icons.Default.SelfImprovement, "Sessions"),
     SETTINGS(Routes.SETTINGS, Icons.Default.Settings, "Settings"),
 }
 
-/**
- * The main app shell with bottom navigation and a [NavHost] that hosts
- * every feature screen in the application.
- */
 @Composable
 fun MasterLLMApp(modifier: Modifier = Modifier) {
     val navController = rememberNavController()
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentDestination = navBackStackEntry?.destination
 
-    // Show bottom bar only on top-level destinations (not on download screen)
     val topLevelRoutes = TopLevelDestination.entries.map { it.route }.toSet()
     val showBottomBar = currentDestination?.route in topLevelRoutes
 
@@ -89,7 +72,9 @@ fun MasterLLMApp(modifier: Modifier = Modifier) {
         contentWindowInsets = WindowInsets(0.dp),
         bottomBar = {
             if (showBottomBar) {
-                NavigationBar {
+                NavigationBar(
+                    containerColor = MaterialTheme.colorScheme.surface,
+                ) {
                     TopLevelDestination.entries.forEach { dest ->
                         val selected = currentDestination?.hierarchy?.any {
                             it.route == dest.route
@@ -98,8 +83,6 @@ fun MasterLLMApp(modifier: Modifier = Modifier) {
                             selected = selected,
                             onClick = {
                                 navController.navigate(dest.route) {
-                                    // Pop up to the start destination to avoid building up
-                                    // a large back-stack of top-level destinations
                                     popUpTo(navController.graph.findStartDestination().id) {
                                         saveState = true
                                     }
@@ -107,9 +90,7 @@ fun MasterLLMApp(modifier: Modifier = Modifier) {
                                     restoreState = true
                                 }
                             },
-                            icon = {
-                                Icon(dest.icon, contentDescription = dest.label)
-                            },
+                            icon = { Icon(dest.icon, contentDescription = dest.label) },
                             label = { Text(dest.label) },
                         )
                     }
@@ -124,7 +105,6 @@ fun MasterLLMApp(modifier: Modifier = Modifier) {
                 .fillMaxSize()
                 .padding(innerPadding),
         ) {
-            // ── Model download gate ──────────────────────────────
             composable(Routes.MODEL_DOWNLOAD) {
                 ModelDownloadScreen(
                     onModelReady = {
@@ -136,9 +116,8 @@ fun MasterLLMApp(modifier: Modifier = Modifier) {
                 )
             }
 
-            // ── Top-level tabs ──────────────────────────────────
             composable(Routes.HOME) {
-                HomeHubScreen(
+                SolaceHomeScreen(
                     modifier = Modifier.fillMaxSize(),
                     onOpenChat = {
                         navController.navigate(Routes.CHAT) {
@@ -149,161 +128,201 @@ fun MasterLLMApp(modifier: Modifier = Modifier) {
                             restoreState = true
                         }
                     },
-                    onOpenRoleplay = {
-                        navController.navigate(Routes.ROLEPLAY)
+                    onOpenSessions = {
+                        navController.navigate(Routes.ROLEPLAY) {
+                            popUpTo(navController.graph.findStartDestination().id) {
+                                saveState = true
+                            }
+                            launchSingleTop = true
+                            restoreState = true
+                        }
                     },
-                    onOpenImageGen = {
-                        navController.navigate(Routes.IMAGE_GEN)
-                    },
-                )
-            }
-            composable(Routes.CHAT) {
-                ChatScreen(modifier = Modifier.fillMaxSize())
-            }
-            composable(Routes.MARKETPLACE) {
-                MarketplaceScreen(modifier = Modifier.fillMaxSize())
-            }
-            composable(Routes.SETTINGS) {
-                SettingsScreen(
-                    modifier = Modifier.fillMaxSize(),
-                    onOpenAuth = { navController.navigate(Routes.AUTH) },
-                    onOpenModelManager = { navController.navigate(Routes.MODEL_MANAGER) },
-                    onOpenImageGen = { navController.navigate(Routes.IMAGE_GEN) },
-                    onOpenPerformance = { navController.navigate(Routes.PERFORMANCE) },
-                    onOpenOllamaExplorer = { navController.navigate(Routes.OLLAMA_EXPLORER) },
-                    onOpenOllamaServe = { navController.navigate(Routes.OLLAMA_SERVE) },
                 )
             }
 
-            // ── Secondary destinations ──────────────────────────
-            composable(Routes.IMAGE_GEN) {
-                ImageGenScreen(modifier = Modifier.fillMaxSize())
+            composable(Routes.CHAT) {
+                ChatScreen(modifier = Modifier.fillMaxSize())
             }
-            composable(Routes.AUTH) {
-                AuthScreen(modifier = Modifier.fillMaxSize())
-            }
-            composable(Routes.MODEL_MANAGER) {
-                ModelManagerScreen(modifier = Modifier.fillMaxSize())
-            }
+
             composable(Routes.ROLEPLAY) {
                 RoleplayScreen(modifier = Modifier.fillMaxSize())
             }
-            composable(Routes.PERFORMANCE) {
-                PerformanceMonitorScreen(
-                    modifier = Modifier.fillMaxSize(),
-                    onNavigateBack = { navController.popBackStack() },
-                )
-            }
-            composable(Routes.TASK_TEMPLATES) {
-                TaskTemplatesScreen(
-                    onBackClick = { navController.popBackStack() },
-                    onApplyTemplate = { _, _ -> navController.popBackStack() },
-                )
-            }
-            composable(Routes.OLLAMA_EXPLORER) {
-                OllamaModelExplorerScreen(
-                    onNavigateBack = { navController.popBackStack() },
-                    modifier = Modifier.fillMaxSize(),
-                )
-            }
-            composable(Routes.OLLAMA_SERVE) {
-                OllamaServeScreen(
-                    onNavigateBack = { navController.popBackStack() },
-                    modifier = Modifier.fillMaxSize(),
-                )
-            }
-            composable(Routes.VOICE) {
-                VoiceScreen(modifier = Modifier.fillMaxSize())
-            }
-            composable(Routes.AGENT) {
-                AgentScreen(
-                    onNavigateBack = { navController.popBackStack() },
-                    modifier = Modifier.fillMaxSize(),
-                )
+
+            composable(Routes.SETTINGS) {
+                SettingsScreen(modifier = Modifier.fillMaxSize())
             }
         }
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun HomeHubScreen(
+private fun SolaceHomeScreen(
     onOpenChat: () -> Unit,
-    onOpenRoleplay: () -> Unit,
-    onOpenImageGen: () -> Unit,
+    onOpenSessions: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val context = LocalContext.current
+
     LazyColumn(
         modifier = modifier
             .statusBarsPadding()
             .fillMaxSize(),
-        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 24.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
+        // Hero greeting
+        item {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Text(
+                    text = "Solace",
+                    style = MaterialTheme.typography.displaySmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    fontWeight = FontWeight.Bold,
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "Your compassionate AI companion",
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+
+        // How are you feeling
         item {
             ElevatedCard(
                 modifier = Modifier.fillMaxWidth(),
             ) {
-                Column(modifier = Modifier.padding(20.dp)) {
+                Column(
+                    modifier = Modifier.padding(20.dp),
+                ) {
                     Text(
-                        text = "Create with local AI",
-                        style = MaterialTheme.typography.headlineSmall,
+                        text = "How are you feeling today?",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Medium,
                     )
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Text(
-                        text = "Continue your chat session, open roleplay, or generate images from one place.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        MoodChip("I need to talk", Modifier.weight(1f), onOpenChat)
+                        MoodChip("I'm anxious", Modifier.weight(1f), onOpenChat)
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        MoodChip("Just checking in", Modifier.weight(1f), onOpenChat)
+                        MoodChip("I'm in crisis", Modifier.weight(1f), onOpenChat)
+                    }
                 }
             }
         }
 
+        // Main action cards
         item {
-            HomeQuickActionCard(
-                title = "Chat",
-                subtitle = "Pick up your existing conversation session",
-                icon = Icons.Default.Home,
+            ElevatedCard(
+                modifier = Modifier.fillMaxWidth(),
                 onClick = onOpenChat,
-            )
+            ) {
+                ListItem(
+                    headlineContent = {
+                        Text("Talk to Solace", fontWeight = FontWeight.Medium)
+                    },
+                    supportingContent = {
+                        Text("Open a conversation with your AI companion")
+                    },
+                    leadingContent = {
+                        Icon(Icons.Default.Chat, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                    },
+                    trailingContent = {
+                        Icon(Icons.Default.KeyboardArrowRight, contentDescription = null)
+                    },
+                )
+            }
         }
 
         item {
-            HomeQuickActionCard(
-                title = "Roleplay",
-                subtitle = "Open immersive character sessions",
-                icon = Icons.Default.Person,
-                onClick = onOpenRoleplay,
-            )
+            ElevatedCard(
+                modifier = Modifier.fillMaxWidth(),
+                onClick = onOpenSessions,
+            ) {
+                ListItem(
+                    headlineContent = {
+                        Text("Guided Sessions", fontWeight = FontWeight.Medium)
+                    },
+                    supportingContent = {
+                        Text("Therapeutic exercises for anxiety, panic, sleep, and more")
+                    },
+                    leadingContent = {
+                        Icon(Icons.Default.SelfImprovement, contentDescription = null, tint = MaterialTheme.colorScheme.secondary)
+                    },
+                    trailingContent = {
+                        Icon(Icons.Default.KeyboardArrowRight, contentDescription = null)
+                    },
+                )
+            }
         }
 
+        // Crisis helpline
         item {
-            HomeQuickActionCard(
-                title = "Image Generation",
-                subtitle = "Run Diffusers models directly on-device",
-                icon = Icons.Default.Search,
-                onClick = onOpenImageGen,
-            )
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.errorContainer,
+                ),
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                ) {
+                    Text(
+                        text = "In crisis? You are not alone.",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onErrorContainer,
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    CrisisHelplineButton("988 Suicide & Crisis Lifeline (US)", "988")
+                    CrisisHelplineButton("iCall India", "9152987821")
+                    CrisisHelplineButton("Vandrevala Foundation", "18602662345")
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "Tap a number to call. Your life has value.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onErrorContainer,
+                    )
+                }
+            }
         }
     }
 }
 
 @Composable
-private fun HomeQuickActionCard(
-    title: String,
-    subtitle: String,
-    icon: ImageVector,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    ElevatedCard(
-        modifier = modifier.fillMaxWidth(),
+private fun MoodChip(text: String, modifier: Modifier = Modifier, onClick: () -> Unit) {
+    AssistChip(
         onClick = onClick,
+        label = { Text(text, style = MaterialTheme.typography.bodySmall) },
+        modifier = modifier,
+    )
+}
+
+@Composable
+private fun CrisisHelplineButton(label: String, phoneNumber: String) {
+    val context = LocalContext.current
+    TextButton(
+        onClick = {
+            context.startActivity(Intent(Intent.ACTION_DIAL, Uri.parse("tel:$phoneNumber")))
+        },
+        contentPadding = PaddingValues(horizontal = 0.dp, vertical = 2.dp),
     ) {
-        ListItem(
-            headlineContent = { Text(title) },
-            supportingContent = { Text(subtitle) },
-            leadingContent = { Icon(icon, contentDescription = null) },
-            trailingContent = { Icon(Icons.Default.KeyboardArrowRight, contentDescription = null) },
-        )
+        Icon(Icons.Default.Phone, contentDescription = null, modifier = Modifier.size(16.dp))
+        Spacer(modifier = Modifier.width(8.dp))
+        Text(label, style = MaterialTheme.typography.bodySmall)
     }
 }
