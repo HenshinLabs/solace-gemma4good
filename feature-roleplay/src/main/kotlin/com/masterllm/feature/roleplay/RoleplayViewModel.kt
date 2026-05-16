@@ -19,6 +19,7 @@ import com.masterllm.core.domain.repository.ConversationRepository
 import com.masterllm.core.domain.repository.ModelRepository
 import com.masterllm.core.domain.repository.RoleplayRepository
 import com.masterllm.core.domain.repository.SettingsRepository
+import com.masterllm.core.data.BundledModelManager
 import com.masterllm.runtime.gguf.GgufEngine
 import com.masterllm.runtime.gguf.GgufRuntimeCoordinator
 import com.masterllm.runtime.gguf.PerformanceUsageSampler
@@ -192,6 +193,11 @@ class RoleplayViewModel @Inject constructor(
                                 model.format == ModelFormat.SAFETENSORS ||
                                 model.format == ModelFormat.DIFFUSERS
                             )
+                }.toMutableList()
+
+                val bundled = getBundledModel()
+                if (bundled != null && filtered.none { it.id == bundled.id }) {
+                    filtered.add(0, bundled)
                 }
 
                 _uiState.update { state ->
@@ -1074,5 +1080,20 @@ class RoleplayViewModel @Inject constructor(
             appendLine("Write in third person, use *actions* for physical actions.")
             appendLine("Keep responses immersive and in-character.")
         }
+    }
+
+    private fun getBundledModel(): LlmModel? {
+        val info = BundledModelManager.initialize(appContext) ?: return null
+        return LlmModel(
+            id = info.id,
+            repoId = "google/gemma-4-E2B-it",
+            fileName = BundledModelManager.MODEL_FILENAME,
+            displayName = info.displayName,
+            format = ModelFormat.GGUF,
+            sizeBytes = java.io.File(info.localPath).length(),
+            downloadState = DownloadState.DOWNLOADED,
+            localPath = info.localPath,
+            quantization = "Q4_K_M",
+        )
     }
 }

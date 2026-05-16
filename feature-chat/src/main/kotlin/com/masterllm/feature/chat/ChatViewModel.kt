@@ -681,13 +681,13 @@ class ChatViewModel @Inject constructor(
                             id = UUID.randomUUID().toString(),
                             conversationId = convo.id,
                             role = MessageRole.SYSTEM,
-                            content = "The user has attached an image. The image path is: $pendingImage. You are a text-only model and cannot process images. Respond acknowledging the image was received.",
+                            content = "The user has attached an image at: $pendingImage. Describe what you see in the image and respond to the user's message in context of the image.",
                         ),
                     )
                 }
 
                 val ready = ensureEngineReady(convo)
-                    ?: throw IllegalStateException("Download a GGUF model in Marketplace before chatting.")
+                    ?: throw IllegalStateException("Model not ready. Please wait for the model to download.")
 
                 val activeModel = ready.model
                 val targetModelId = activeModel.id
