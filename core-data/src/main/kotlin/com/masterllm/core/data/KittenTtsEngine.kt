@@ -13,8 +13,7 @@ import java.util.zip.ZipInputStream
 import javax.inject.Inject
 import javax.inject.Singleton
 
-@Singleton
-class KittenTtsEngine @Inject constructor() {
+class KittenTtsEngine {
 
     private var engine: OnnxTtsEngine? = null
     private var sampleRate = 24000
