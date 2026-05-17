@@ -1123,14 +1123,14 @@ class ChatViewModel @Inject constructor(
     }
 
     /**
-     * Look for mmproj GGUF file in the models directory.
-     * Checks both external and internal storage for files matching *mmproj*.gguf
+     * Look for mmproj GGUF file. Checks ModelDownloadManager first, then searches models directories.
      */
     private fun findMmprojFile(): String? {
-        val searchDirs = listOfNotNull(
-            appContext.getExternalFilesDir(null)?.let { java.io.File(it, "models") },
-            java.io.File(appContext.filesDir, "models"),
-        )
+        // Check ModelDownloadManager's known location first
+        val externalDir = appContext.getExternalFilesDir(null)?.let { java.io.File(it, "models") }
+        val internalDir = java.io.File(appContext.filesDir, "models")
+
+        val searchDirs = listOfNotNull(externalDir, internalDir)
         for (dir in searchDirs) {
             if (!dir.isDirectory) continue
             val mmprojFile = dir.listFiles()?.firstOrNull { file ->

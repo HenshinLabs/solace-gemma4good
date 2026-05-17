@@ -67,6 +67,7 @@ class ModelDownloadViewModel @Inject constructor(
     fun startDownload() {
         _uiState.update { it.copy(phase = Phase.Downloading) }
         viewModelScope.launch {
+            // Download main model
             downloadManager.ensureModelReady().collect { status ->
                 val phase = when (status) {
                     is ModelDownloadManager.DownloadStatus.CheckingLocal -> Phase.CheckingLocal
@@ -79,9 +80,36 @@ class ModelDownloadViewModel @Inject constructor(
                     it.copy(
                         phase = phase,
                         downloadStatus = status,
-                        isReady = status is ModelDownloadManager.DownloadStatus.Ready,
+                        isReady = false,
                     )
                 }
+            }
+
+            // Download mmproj for vision support (optional, non-blocking)
+            if (downloadManager.isModelReady() && !downloadManager.isMmprojReady()) {
+                _uiState.update {
+                    it.copy(
+                        downloadStatus = ModelDownloadManager.DownloadStatus.Downloading(0, ModelDownloadManager.MMPROJ_SIZE_BYTES),
+                    )
+                }
+                downloadManager.ensureMmprojReady().collect { status ->
+                    // mmproj download is optional — don't fail the whole flow
+                    when (status) {
+                        is ModelDownloadManager.DownloadStatus.Ready -> {
+                            _uiState.update { it.copy(phase = Phase.Ready, isReady = true) }
+                        }
+                        is ModelDownloadManager.DownloadStatus.Error -> {
+                            // mmproj failed but main model is ready — still proceed
+                            _uiState.update { it.copy(phase = Phase.Ready, isReady = true) }
+                        }
+                        else -> { /* progress updates */ }
+                    }
+                }
+            }
+
+            // All done
+            if (downloadManager.isModelReady()) {
+                _uiState.update { it.copy(phase = Phase.Ready, isReady = true) }
             }
         }
     }
@@ -224,14 +252,15 @@ private fun ConsentCard(onAllow: () -> Unit) {
             ) {
                 InfoRow(label = "Model", value = "Gemma 4 E2B (Q4_K_M)")
                 InfoRow(label = "Size", value = "~3.1 GB")
-                InfoRow(label = "Source", value = "HuggingFace (unsloth)")
+                InfoRow(label = "Vision", value = "mmproj (~941 MB)")
+                InfoRow(label = "Source", value = "HuggingFace")
                 InfoRow(label = "Context", value = "128K tokens")
                 InfoRow(label = "Storage", value = "External files dir")
             }
 
             Spacer(modifier = Modifier.height(16.dp))
             Text(
-                text = "This is a one-time download. The model will be cached locally and verified with SHA-256 integrity check. You can delete it later from Settings.",
+                text = "This is a one-time download (~4 GB total). The model and vision projector will be cached locally. You can delete them later from Settings.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center,
