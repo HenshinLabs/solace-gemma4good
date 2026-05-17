@@ -230,6 +230,7 @@ private fun ChatPane(
                 onStopListening = { onAction(ChatAction.StopListening) },
                 onStopSpeaking = { onAction(ChatAction.StopSpeaking) },
                 onDownloadVoskModel = { onAction(ChatAction.DownloadVoskModel) },
+                onWebSearch = { onAction(ChatAction.WebSearch(state.inputText)) },
             )
         },
     ) { padding ->
@@ -530,6 +531,7 @@ private fun ChatInputBar(
     onStopListening: () -> Unit = {},
     onStopSpeaking: () -> Unit = {},
     onDownloadVoskModel: () -> Unit = {},
+    onWebSearch: () -> Unit = {},
 ) {
     val context = LocalContext.current
     var webSearchEnabled by remember { mutableStateOf(false) }
@@ -594,6 +596,19 @@ private fun ChatInputBar(
                     enabled = !isGenerating,
                 ) {
                     Icon(Icons.Default.Image, contentDescription = "Attach image")
+                }
+                Spacer(Modifier.width(4.dp))
+
+                // Web search button
+                IconButton(
+                    onClick = onWebSearch,
+                    enabled = !isGenerating && text.isNotBlank(),
+                ) {
+                    Icon(
+                        Icons.Default.Search,
+                        contentDescription = "Web search",
+                        tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
+                    )
                 }
                 Spacer(Modifier.width(4.dp))
                 OutlinedTextField(
