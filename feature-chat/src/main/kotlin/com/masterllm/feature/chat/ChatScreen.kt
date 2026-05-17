@@ -218,11 +218,18 @@ private fun ChatPane(
                 text = state.inputText,
                 isGenerating = state.isGenerating,
                 pendingImageAttachment = state.pendingImageAttachment,
+                isListening = state.asrState.state == com.masterllm.core.data.VoskSpeechManager.ListeningState.LISTENING,
+                isSpeaking = state.isSpeaking,
+                voskModelReady = state.voskModelReady,
                 onTextChange = { onAction(ChatAction.InputChanged(it)) },
                 onSend = { onAction(ChatAction.SendMessage) },
                 onStop = { onAction(ChatAction.StopGeneration) },
                 onAttachImage = { onAction(ChatAction.AttachImage(it)) },
                 onClearImage = { onAction(ChatAction.ClearImageAttachment) },
+                onStartListening = { onAction(ChatAction.StartListening) },
+                onStopListening = { onAction(ChatAction.StopListening) },
+                onStopSpeaking = { onAction(ChatAction.StopSpeaking) },
+                onDownloadVoskModel = { onAction(ChatAction.DownloadVoskModel) },
             )
         },
     ) { padding ->
@@ -511,11 +518,18 @@ private fun ChatInputBar(
     text: String,
     isGenerating: Boolean,
     pendingImageAttachment: String?,
+    isListening: Boolean = false,
+    isSpeaking: Boolean = false,
+    voskModelReady: Boolean = false,
     onTextChange: (String) -> Unit,
     onSend: () -> Unit,
     onStop: () -> Unit,
     onAttachImage: (String) -> Unit,
     onClearImage: () -> Unit,
+    onStartListening: () -> Unit = {},
+    onStopListening: () -> Unit = {},
+    onStopSpeaking: () -> Unit = {},
+    onDownloadVoskModel: () -> Unit = {},
 ) {
     val context = LocalContext.current
     var webSearchEnabled by remember { mutableStateOf(false) }
@@ -609,14 +623,35 @@ private fun ChatInputBar(
                 }
                 // Mic button for voice input
                 IconButton(
-                    onClick = { /* Voice input - wiring later */ },
+                    onClick = {
+                        if (!voskModelReady) {
+                            onDownloadVoskModel()
+                        } else if (isListening) {
+                            onStopListening()
+                        } else {
+                            onStartListening()
+                        }
+                    },
                     enabled = !isGenerating,
                 ) {
                     Icon(
-                        imageVector = Icons.Default.Mic,
-                        contentDescription = "Voice input",
-                        tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
+                        imageVector = if (isListening) Icons.Default.MicOff else Icons.Default.Mic,
+                        contentDescription = if (isListening) "Stop listening" else "Voice input",
+                        tint = if (isListening) MaterialTheme.colorScheme.error
+                            else if (voskModelReady) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
                     )
+                }
+
+                // TTS stop button (visible when speaking)
+                if (isSpeaking) {
+                    IconButton(onClick = onStopSpeaking) {
+                        Icon(
+                            imageVector = Icons.Default.VolumeOff,
+                            contentDescription = "Stop speaking",
+                            tint = MaterialTheme.colorScheme.error,
+                        )
+                    }
                 }
                 Spacer(Modifier.width(4.dp))
                 if (isGenerating) {

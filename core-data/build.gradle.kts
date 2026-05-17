@@ -52,6 +52,12 @@ dependencies {
     // Timber
     implementation(libs.timber)
 
+    // Vosk offline speech recognition
+    implementation("com.alphacephei:vosk-android:0.3.47")
+
+    // ONNX Runtime for KittenTTS
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.18.0")
+
     // Testing
     testImplementation(libs.junit5.api)
     testRuntimeOnly(libs.junit5.engine)

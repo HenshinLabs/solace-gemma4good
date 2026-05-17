@@ -202,3 +202,62 @@ Java_com_masterllm_runtime_gguf_GgufEngine_benchModel(
     std::string result = llmInference->benchModel(pp, tg, pl, nr);
     return env->NewStringUTF(result.c_str());
 }
+
+// Multimodal support
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_masterllm_runtime_gguf_GgufEngine_loadMmproj(
+    JNIEnv* env,
+    jobject /*thiz*/,
+    jlong modelPtr,
+    jstring mmprojPath
+) {
+    auto* llmInference = reinterpret_cast<LLMInference*>(modelPtr);
+    jboolean isCopy = true;
+    const char* mmprojPathCstr = env->GetStringUTFChars(mmprojPath, &isCopy);
+
+    bool result = llmInference->loadMmproj(mmprojPathCstr);
+
+    env->ReleaseStringUTFChars(mmprojPath, mmprojPathCstr);
+    return result;
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_masterllm_runtime_gguf_GgufEngine_supportsVision(
+    JNIEnv* /*env*/,
+    jobject /*thiz*/,
+    jlong modelPtr
+) {
+    auto* llmInference = reinterpret_cast<LLMInference*>(modelPtr);
+    return llmInference->supportsVision();
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_masterllm_runtime_gguf_GgufEngine_startCompletionWithImage(
+    JNIEnv* env,
+    jobject /*thiz*/,
+    jlong modelPtr,
+    jstring prompt,
+    jbyteArray imageData,
+    jint width,
+    jint height
+) {
+    auto* llmInference = reinterpret_cast<LLMInference*>(modelPtr);
+    jboolean isCopy = true;
+    const char* promptCstr = env->GetStringUTFChars(prompt, &isCopy);
+
+    jbyte* imageBytes = env->GetByteArrayElements(imageData, &isCopy);
+    auto* imagePtr = reinterpret_cast<const unsigned char*>(imageBytes);
+
+    try {
+        llmInference->startCompletionWithImage(promptCstr, imagePtr, width, height);
+    } catch (std::exception& error) {
+        env->ReleaseStringUTFChars(prompt, promptCstr);
+        env->ReleaseByteArrayElements(imageData, imageBytes, JNI_ABORT);
+        env->ThrowNew(env->FindClass("java/lang/IllegalStateException"), error.what());
+        return;
+    }
+
+    env->ReleaseStringUTFChars(prompt, promptCstr);
+    env->ReleaseByteArrayElements(imageData, imageBytes, JNI_ABORT);
+}
