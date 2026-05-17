@@ -45,9 +45,14 @@ add_subdirectory(../../../../llama.cpp llama.cpp)
 set(LLAMA_DIR_RELATIVE "../../../../llama.cpp")
 get_filename_component(LLAMA_DIR ${LLAMA_DIR_RELATIVE} ABSOLUTE)
 
+# Manually add mtmd (multimodal) library
+set(LLAMA_INSTALL_VERSION "0.0.0" CACHE STRING "" FORCE)
+add_subdirectory(${LLAMA_DIR}/tools/mtmd mtmd)
+
 set(GGML_DIR ${LLAMA_DIR}/ggml)
 set(COMMON_DIR ${LLAMA_DIR}/common)
 set(VENDOR_DIR ${LLAMA_DIR}/vendor)
+set(MTMD_DIR ${LLAMA_DIR}/tools/mtmd)
 
 target_compile_options(
     llama
@@ -85,6 +90,7 @@ function(build_library target_name)
         ${GGML_DIR}/src/ggml-cpu
         ${LLAMA_DIR}/include
         ${VENDOR_DIR}
+        ${MTMD_DIR}
     )
     target_compile_options(
         ${target_name}
@@ -101,6 +107,7 @@ function(build_library target_name)
         ${LOG_LIB}
         llama
         common
+        mtmd
     )
     if(VULKAN_LIB)
         target_link_libraries(${target_name} PRIVATE ${VULKAN_LIB})

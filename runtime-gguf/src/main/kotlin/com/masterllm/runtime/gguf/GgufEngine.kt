@@ -543,7 +543,49 @@ throw IllegalStateException("Failed to load model")
         verifyHandle()
         return benchModel(nativePtr, pp, tg, pl, nr)
     }
-    
+
+    /**
+     * Loads a multimodal projector (mmproj) for vision support.
+     * Must be called after loadModel(). Returns true if successful.
+     */
+    fun loadMmproj(mmprojPath: String): Boolean {
+        verifyHandle()
+        return loadMmproj(nativePtr, mmprojPath)
+    }
+
+    /**
+     * Returns true if the loaded model has vision/multimodal support.
+     */
+    fun supportsVision(): Boolean {
+        if (nativePtr == 0L) return false
+        return supportsVision(nativePtr)
+    }
+
+    /**
+     * Starts completion with an image input. The image should be raw RGB bytes (width * height * 3).
+     */
+    fun startCompletionWithImage(prompt: String, imageData: ByteArray, width: Int, height: Int) {
+        verifyHandle()
+        startCompletionWithImage(nativePtr, prompt, imageData, width, height)
+    }
+
+    /**
+     * Runs one iteration of the token generation loop.
+     * Returns the generated token piece, or "[EOG]" if end of generation.
+     */
+    fun completionLoop(): String {
+        verifyHandle()
+        return completionLoop(nativePtr)
+    }
+
+    /**
+     * Stops the current completion and saves the assistant message.
+     */
+    fun stopCompletion() {
+        verifyHandle()
+        stopCompletion(nativePtr)
+    }
+
     private fun freeNativeModel(): Unit {
         if (nativePtr != 0L) {
             closeNative(nativePtr)
@@ -616,4 +658,15 @@ nUbatch: Int,
         pl: Int,
         nr: Int,
     ): String
+
+    // Multimodal support
+    private external fun loadMmproj(modelPtr: Long, mmprojPath: String): Boolean
+    private external fun supportsVision(modelPtr: Long): Boolean
+    private external fun startCompletionWithImage(
+        modelPtr: Long,
+        prompt: String,
+        imageData: ByteArray,
+        width: Int,
+        height: Int,
+    )
 }

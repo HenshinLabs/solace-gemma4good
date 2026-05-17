@@ -46,8 +46,8 @@ android {
         applicationId = "com.masterllm.app"
         minSdk = libs.versions.minSdk.get().toInt()
         targetSdk = libs.versions.targetSdk.get().toInt()
-    versionCode = 31
-    versionName = "2.0.3"
+    versionCode = 32
+    versionName = "2.0.4"
 
         // REVIEW: Update MODEL_DOWNLOAD_URL to point to your CDN for production.
         buildConfigField("String", "MODEL_DOWNLOAD_URL", "\"https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_K_M.gguf\"")
@@ -172,6 +172,9 @@ dependencies {
 
     // ONNX Runtime for KittenTTS
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.18.0")
+
+    // Vosk offline speech recognition
+    implementation("com.alphacephei:vosk-android:0.3.47")
 
     testImplementation(libs.junit5.api)
     testRuntimeOnly(libs.junit5.engine)
