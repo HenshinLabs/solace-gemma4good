@@ -37,12 +37,19 @@ class ModelDownloadManager @Inject constructor(
         const val MODEL_DOWNLOAD_URL =
             "https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_K_M.gguf"
 
+        // mmproj for vision support
+        const val MMPROJ_FILENAME = "gemma-4-E2B-it.BF16-mmproj.gguf"
+        const val MMPROJ_DOWNLOAD_URL =
+            "https://huggingface.co/bjivanovich/Gemma4-E2B-Vision-GGUF/resolve/main/gemma-4-E2B-it.BF16-mmproj.gguf"
+        const val MMPROJ_SIZE_BYTES = 986_833_408L // ~941 MB
+
         const val CONTEXT_LENGTH = 131072 // 128K verified from model card
         const val ARCHITECTURE = "gemma4"
         const val EOS_TOKEN = "<eos>"
 
         private const val PREFS_NAME = "solace_model_prefs"
         private const val KEY_MODEL_READY = "model_ready"
+        private const val KEY_MMPROJ_READY = "mmproj_ready"
         private const val KEY_MODEL_SHA = "model_sha256"
 
         private const val DOWNLOAD_BUFFER_SIZE = 65536
@@ -83,6 +90,60 @@ class ModelDownloadManager @Inject constructor(
             modelFile.exists() &&
             modelFile.length() > 0L
     }
+
+    fun getMmprojFile(): File = File(getModelDirectory(), MMPROJ_FILENAME)
+
+    fun isMmprojReady(): Boolean {
+        val mmprojFile = getMmprojFile()
+        return prefs.getBoolean(KEY_MMPROJ_READY, false) &&
+            mmprojFile.exists() &&
+            mmprojFile.length() > 0L
+    }
+
+    /**
+     * Downloads the mmproj file for vision support.
+     * Call after the main model is downloaded.
+     */
+    fun ensureMmprojReady(): Flow<DownloadStatus> = flow {
+        emit(DownloadStatus.CheckingLocal)
+
+        val mmprojFile = getMmprojFile()
+
+        if (isMmprojReady()) {
+            Log.i(TAG, "mmproj already available at: ${mmprojFile.absolutePath}")
+            emit(DownloadStatus.Ready)
+            return@flow
+        }
+
+        val partialFile = File(getModelDirectory(), "$MMPROJ_FILENAME.partial")
+
+        if (mmprojFile.exists() && mmprojFile.length() > 0L) {
+            markMmprojReady()
+            emit(DownloadStatus.Ready)
+            return@flow
+        }
+
+        // Download mmproj
+        try {
+            downloadModel(partialFile) { bytesDownloaded, totalBytes ->
+                emit(DownloadStatus.Downloading(bytesDownloaded, totalBytes))
+            }
+        } catch (e: IOException) {
+            partialFile.delete()
+            emit(DownloadStatus.Error("mmproj download failed: ${e.message}", retryable = true))
+            return@flow
+        }
+
+        // Move partial to final
+        if (!partialFile.renameTo(mmprojFile)) {
+            partialFile.copyTo(mmprojFile, overwrite = true)
+            partialFile.delete()
+        }
+
+        markMmprojReady()
+        Log.i(TAG, "mmproj ready: ${mmprojFile.absolutePath}")
+        emit(DownloadStatus.Ready)
+    }.flowOn(Dispatchers.IO)
 
     fun ensureModelReady(): Flow<DownloadStatus> = flow {
         emit(DownloadStatus.CheckingLocal)
@@ -244,7 +305,14 @@ class ModelDownloadManager @Inject constructor(
             .apply()
     }
 
+    private fun markMmprojReady() {
+        prefs.edit()
+            .putBoolean(KEY_MMPROJ_READY, true)
+            .apply()
+    }
+
     fun getModelPath(): String = getModelFile().absolutePath
+    fun getMmprojPath(): String = getMmprojFile().absolutePath
 
     fun getAvailableStorageBytes(): Long {
         return try {
