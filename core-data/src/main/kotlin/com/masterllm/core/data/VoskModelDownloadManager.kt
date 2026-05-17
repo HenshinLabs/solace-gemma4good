@@ -22,9 +22,7 @@ class VoskModelDownloadManager(private val context: Context) {
 
     companion object {
         private const val TAG = "Solace.VoskModelDL"
-        // Primary: GitHub releases (reliable). Fallback: alphacephei.com
         private val MODEL_URLS = listOf(
-            "https://github.com/alphacephei/vosk/releases/download/v0.3.47/vosk-model-small-en-us-0.15.zip",
             "https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip",
         )
         private const val MODEL_DIR = "vosk-model"

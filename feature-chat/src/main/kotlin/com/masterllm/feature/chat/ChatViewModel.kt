@@ -231,9 +231,14 @@ class ChatViewModel @Inject constructor(
             }
         }
 
-        // Initialize TTS
+        // Initialize TTS (await completion before first use)
         viewModelScope.launch {
-            kittenTtsEngine.initialize(appContext)
+            try {
+                val success = kittenTtsEngine.initialize(appContext)
+                Log.i("ChatVM", "TTS initialized: $success")
+            } catch (e: Exception) {
+                Log.e("ChatVM", "TTS init failed: ${e.message}")
+            }
         }
 
         // Read settings FIRST, then watch models to avoid race conditions
@@ -974,15 +979,22 @@ class ChatViewModel @Inject constructor(
                     )
                 }
 
-                // TTS playback for AI response
-                if (_uiState.value.ttsEnabled && kittenTtsEngine.isAvailable()) {
+                // TTS playback for AI response (in separate coroutine to not block)
+                if (_uiState.value.ttsEnabled) {
                     val lastAiMessage = _uiState.value.messages.lastOrNull { it.role == MessageRole.ASSISTANT }
-                    if (lastAiMessage != null) {
+                    if (lastAiMessage != null && kittenTtsEngine.isAvailable()) {
                         val filteredText = TtsTextFilter.filter(lastAiMessage.content)
                         if (filteredText.isNotBlank()) {
-                            _uiState.update { it.copy(isSpeaking = true) }
-                            kittenTtsEngine.speak(filteredText)
-                            _uiState.update { it.copy(isSpeaking = false) }
+                            viewModelScope.launch {
+                                try {
+                                    _uiState.update { it.copy(isSpeaking = true) }
+                                    kittenTtsEngine.speak(filteredText)
+                                } catch (e: Exception) {
+                                    Log.e("ChatVM", "TTS failed: ${e.message}")
+                                } finally {
+                                    _uiState.update { it.copy(isSpeaking = false) }
+                                }
+                            }
                         }
                     }
                 }
