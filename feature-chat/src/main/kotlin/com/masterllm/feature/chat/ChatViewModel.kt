@@ -2,6 +2,7 @@ package com.masterllm.feature.chat
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.masterllm.core.domain.model.*
@@ -18,6 +19,8 @@ import com.masterllm.core.ollama.model.OllamaModelInfo
 import kotlinx.coroutines.flow.catch
 import com.masterllm.runtime.gguf.GgufEngine
 import com.masterllm.runtime.gguf.GgufRuntimeCoordinator
+import com.masterllm.runtime.gguf.OpenClawEngine
+import com.masterllm.runtime.gguf.ToolRegistry
 import com.masterllm.runtime.gguf.PerformanceUsageSampler
 import com.masterllm.runtime.imagegen.ImageGenEngine
 import com.masterllm.runtime.imagegen.ImageGenProgress
@@ -157,6 +160,7 @@ sealed interface ChatAction {
     data object ToggleTts : ChatAction
     data object StopSpeaking : ChatAction
     data object DownloadVoskModel : ChatAction
+    data class WebSearch(val query: String) : ChatAction
 }
 
 @HiltViewModel
@@ -172,10 +176,14 @@ class ChatViewModel @Inject constructor(
     @ApplicationContext private val appContext: Context,
 ) : ViewModel() {
 
-    // ASR and TTS - created manually since they're in the app module
+    // ASR and TTS - created manually
     private val voskSpeechManager = VoskSpeechManager(appContext)
     private val voskModelDownloadManager = VoskModelDownloadManager(appContext)
     private val kittenTtsEngine = KittenTtsEngine()
+
+    // Agent tools - created manually
+    private val toolRegistry = ToolRegistry(appContext)
+    private val openClawEngine = OpenClawEngine(ggufEngine, toolRegistry)
 
     private data class EngineReadyResult(
         val model: LlmModel,
@@ -357,6 +365,7 @@ class ChatViewModel @Inject constructor(
                 _uiState.update { it.copy(isSpeaking = false) }
             }
             ChatAction.DownloadVoskModel -> downloadVoskModel()
+            is ChatAction.WebSearch -> performWebSearch(action.query)
         }
     }
 
@@ -1114,6 +1123,30 @@ class ChatViewModel @Inject constructor(
     }
 
     /**
+     * Look for mmproj GGUF file in the models directory.
+     * Checks both external and internal storage for files matching *mmproj*.gguf
+     */
+    private fun findMmprojFile(): String? {
+        val searchDirs = listOfNotNull(
+            appContext.getExternalFilesDir(null)?.let { java.io.File(it, "models") },
+            java.io.File(appContext.filesDir, "models"),
+        )
+        for (dir in searchDirs) {
+            if (!dir.isDirectory) continue
+            val mmprojFile = dir.listFiles()?.firstOrNull { file ->
+                file.name.contains("mmproj", ignoreCase = true) &&
+                    file.name.endsWith(".gguf", ignoreCase = true) &&
+                    file.length() > 0
+            }
+            if (mmprojFile != null) {
+                Log.i("ChatVM", "Found mmproj: ${mmprojFile.absolutePath}")
+                return mmprojFile.absolutePath
+            }
+        }
+        return null
+    }
+
+    /**
      * Convert Android Bitmap to raw RGB byte array for llama.cpp multimodal input.
      */
     private fun bitmapToRgbBytes(bitmap: Bitmap): ByteArray {
@@ -1135,6 +1168,33 @@ class ChatViewModel @Inject constructor(
     private fun startListening() {
         voskSpeechManager.startListening { transcript ->
             _uiState.update { it.copy(inputText = transcript) }
+        }
+    }
+
+    private fun performWebSearch(query: String) {
+        viewModelScope.launch {
+            try {
+                val searchTool = toolRegistry.getTool("web_search")
+                if (searchTool != null) {
+                    val result = searchTool.executor(mapOf("query" to query))
+                    // Add search result as system message
+                    val convo = _uiState.value.currentConversation ?: return@launch
+                    conversationRepository.addMessage(
+                        Message(
+                            id = UUID.randomUUID().toString(),
+                            conversationId = convo.id,
+                            role = MessageRole.SYSTEM,
+                            content = "Web search results:\n$result",
+                        ),
+                    )
+                    // Trigger generation with search context
+                    sendMessage()
+                } else {
+                    _uiState.update { it.copy(error = "Web search tool not available") }
+                }
+            } catch (e: Exception) {
+                _uiState.update { it.copy(error = "Search failed: ${e.message}") }
+            }
         }
     }
 
@@ -1284,6 +1344,19 @@ class ChatViewModel @Inject constructor(
                 gpuOffloadLayers = resolveDesiredGpuLayers(textRuntimeModel),
             )
             loadDurationMs = ((System.nanoTime() - loadStartedAtNs) / 1_000_000L).coerceAtLeast(0L)
+
+            // Try to load mmproj for multimodal vision support
+            val mmprojPath = findMmprojFile()
+            if (mmprojPath != null) {
+                try {
+                    val visionLoaded = ggufEngine.loadMmproj(mmprojPath)
+                    if (visionLoaded) {
+                        Log.i("ChatVM", "mmproj loaded: vision support enabled")
+                    }
+                } catch (e: Exception) {
+                    Log.w("ChatVM", "mmproj load failed (vision disabled): ${e.message}")
+                }
+            }
 
             replayedMessages = replayConversationContext(
                 conversationId = conversation.id,
