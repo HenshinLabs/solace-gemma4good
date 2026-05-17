@@ -266,6 +266,9 @@ private fun GuidedSessionTemplateCard(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(20.dp),
         elevation = CardDefaults.elevatedCardElevation(defaultElevation = 2.dp),
+        colors = CardDefaults.elevatedCardColors(
+            containerColor = Color.Transparent,
+        ),
     ) {
         Column(
             modifier = Modifier

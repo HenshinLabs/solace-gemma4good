@@ -5,6 +5,7 @@ import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.flowOn
 import java.io.BufferedInputStream
 import java.io.File
@@ -21,11 +22,18 @@ class VoskModelDownloadManager(private val context: Context) {
 
     companion object {
         private const val TAG = "Solace.VoskModelDL"
-        private const val MODEL_URL = "https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip"
+        // Primary: GitHub releases (reliable). Fallback: alphacephei.com
+        private val MODEL_URLS = listOf(
+            "https://github.com/alphacephei/vosk/releases/download/v0.3.47/vosk-model-small-en-us-0.15.zip",
+            "https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip",
+        )
         private const val MODEL_DIR = "vosk-model"
         private const val PREFS_NAME = "vosk_model_prefs"
         private const val KEY_DOWNLOADED = "model_downloaded"
-        private const val BUFFER_SIZE = 8192
+        private const val BUFFER_SIZE = 16384
+        private const val MAX_RETRIES = 3
+        private const val CONNECT_TIMEOUT_MS = 60000
+        private const val READ_TIMEOUT_MS = 300000
     }
 
     sealed class DownloadStatus {
@@ -59,39 +67,42 @@ class VoskModelDownloadManager(private val context: Context) {
         val modelDir = File(context.filesDir, MODEL_DIR)
         modelDir.mkdirs()
 
-        try {
-            // Download zip
-            emit(DownloadStatus.Downloading(0, 0))
+        val zipFile = File(context.cacheDir, "vosk-model.zip")
+        var downloaded = false
+        var lastError: Exception? = null
 
-            val url = URL(MODEL_URL)
-            val conn = url.openConnection() as HttpURLConnection
-            conn.connectTimeout = 30000
-            conn.readTimeout = 60000
-            val totalBytes = conn.contentLength.toLong()
-
-            val zipFile = File(context.cacheDir, "vosk-model.zip")
-            conn.inputStream.use { input ->
-                FileOutputStream(zipFile).use { output ->
-                    val buffer = ByteArray(BUFFER_SIZE)
-                    var bytesRead: Int
-                    var totalRead = 0L
-                    var lastEmit = 0L
-
-                    while (input.read(buffer).also { bytesRead = it } != -1) {
-                        output.write(buffer, 0, bytesRead)
-                        totalRead += bytesRead
-
-                        val now = System.currentTimeMillis()
-                        if (now - lastEmit > 350L) {
-                            emit(DownloadStatus.Downloading(totalRead, totalBytes))
-                            lastEmit = now
-                        }
+        // Try each URL with retries
+        for (url in MODEL_URLS) {
+            if (downloaded) break
+            for (attempt in 1..MAX_RETRIES) {
+                try {
+                    Log.i(TAG, "Downloading from $url (attempt $attempt/$MAX_RETRIES)")
+                    emit(DownloadStatus.Downloading(0, 0))
+                    downloadFile(url, zipFile)
+                    downloaded = true
+                    break
+                } catch (e: Exception) {
+                    lastError = e
+                    Log.w(TAG, "Download attempt $attempt failed for $url: ${e.message}")
+                    zipFile.delete()
+                    if (attempt < MAX_RETRIES) {
+                        delay(2000L * attempt) // Backoff
                     }
                 }
             }
-            conn.disconnect()
+        }
 
-            // Extract zip
+        if (!downloaded) {
+            val msg = "Failed to download Vosk model after ${MODEL_URLS.size * MAX_RETRIES} attempts. " +
+                "Last error: ${lastError?.message ?: "Unknown"}. " +
+                "Please check your internet connection."
+            Log.e(TAG, msg)
+            modelDir.deleteRecursively()
+            emit(DownloadStatus.Error(msg))
+            return@flow
+        }
+
+        try {
             emit(DownloadStatus.Extracting)
             extractZip(zipFile, modelDir)
             zipFile.delete()
@@ -100,17 +111,57 @@ class VoskModelDownloadManager(private val context: Context) {
             Log.i(TAG, "Vosk model extracted to: ${modelDir.absolutePath}")
             emit(DownloadStatus.Ready)
         } catch (e: Exception) {
-            Log.e(TAG, "Download failed: ${e.message}")
+            Log.e(TAG, "Extraction failed: ${e.message}")
             modelDir.deleteRecursively()
-            emit(DownloadStatus.Error("Download failed: ${e.message}"))
+            zipFile.delete()
+            emit(DownloadStatus.Error("Extraction failed: ${e.message}"))
         }
     }.flowOn(Dispatchers.IO)
 
+    private fun downloadFile(
+        urlStr: String,
+        outputFile: File,
+    ) {
+        val url = URL(urlStr)
+        val conn = url.openConnection() as HttpURLConnection
+        conn.connectTimeout = CONNECT_TIMEOUT_MS
+        conn.readTimeout = READ_TIMEOUT_MS
+        conn.instanceFollowRedirects = true
+        conn.setRequestProperty("User-Agent", "SolaceApp/1.0")
+        conn.setRequestProperty("Accept", "application/octet-stream")
+
+        try {
+            val responseCode = conn.responseCode
+            if (responseCode !in 200..299) {
+                throw java.io.IOException("HTTP $responseCode from $urlStr")
+            }
+
+            conn.inputStream.use { input ->
+                FileOutputStream(outputFile).use { output ->
+                    val buffer = ByteArray(BUFFER_SIZE)
+                    var bytesRead: Int
+
+                    while (input.read(buffer).also { bytesRead = it } != -1) {
+                        output.write(buffer, 0, bytesRead)
+                    }
+                    output.flush()
+                }
+            }
+
+        } finally {
+            conn.disconnect()
+        }
+    }
+
     private fun extractZip(zipFile: File, targetDir: File) {
-        ZipInputStream(BufferedInputStream(zipFile.inputStream())).use { zip ->
+        ZipInputStream(BufferedInputStream(zipFile.inputStream(), BUFFER_SIZE)).use { zip ->
             var entry = zip.nextEntry
             while (entry != null) {
                 val file = File(targetDir, entry.name)
+                // Prevent zip path traversal
+                if (!file.canonicalPath.startsWith(targetDir.canonicalPath)) {
+                    throw SecurityException("Zip path traversal detected: ${entry.name}")
+                }
                 if (entry.isDirectory) {
                     file.mkdirs()
                 } else {
