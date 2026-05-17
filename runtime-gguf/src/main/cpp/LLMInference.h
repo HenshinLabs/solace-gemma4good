@@ -3,6 +3,8 @@
 #include <llama.h>
 #include <common.h>
 #include <chat.h>
+#include <mtmd.h>
+#include <mtmd-helper.h>
 #include <string>
 #include <vector>
 
@@ -15,7 +17,10 @@ private:
     llama_token _currToken;
     llama_batch* _batch = nullptr;
     llama_batch g_batch;
-    
+
+    // Multimodal support
+    mtmd_context* _mtmd_ctx = nullptr;
+
     // Stores messages in the conversation
     std::vector<llama_chat_message> _messages;
     
@@ -79,6 +84,11 @@ int nUbatch
     void startCompletion(const char* query);
     std::string completionLoop();
     void stopCompletion();
-    
+
+    // Multimodal support
+    bool loadMmproj(const char* mmproj_path);
+    bool supportsVision() const { return _mtmd_ctx != nullptr && mtmd_support_vision(_mtmd_ctx); }
+    void startCompletionWithImage(const char* query, const unsigned char* image_data, uint32_t nx, uint32_t ny);
+
     std::string benchModel(int pp, int tg, int pl, int nr);
 };

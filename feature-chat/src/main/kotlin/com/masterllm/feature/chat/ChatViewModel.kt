@@ -8,6 +8,10 @@ import com.masterllm.core.domain.model.*
 import com.masterllm.core.domain.repository.ConversationRepository
 import com.masterllm.core.domain.repository.ModelRepository
 import com.masterllm.core.data.BundledModelManager
+import com.masterllm.core.data.VoskSpeechManager
+import com.masterllm.core.data.VoskModelDownloadManager
+import com.masterllm.core.data.TtsTextFilter
+import com.masterllm.core.data.KittenTtsEngine
 import com.masterllm.core.domain.repository.SettingsRepository
 import com.masterllm.core.ollama.api.OllamaApiService
 import com.masterllm.core.ollama.model.OllamaModelInfo
@@ -114,6 +118,10 @@ data class ChatUiState(
     val ollamaModels: List<OllamaModelInfo> = emptyList(),
     val ollamaSelectedModel: String = "",
     val pendingImageAttachment: String? = null,
+    val asrState: VoskSpeechManager.AsrState = VoskSpeechManager.AsrState(),
+    val ttsEnabled: Boolean = true,
+    val isSpeaking: Boolean = false,
+    val voskModelReady: Boolean = false,
 )
 
 sealed interface ChatAction {
@@ -144,6 +152,11 @@ sealed interface ChatAction {
     data class SelectOllamaModel(val modelName: String) : ChatAction
     data class AttachImage(val imagePath: String) : ChatAction
     data object ClearImageAttachment : ChatAction
+    data object StartListening : ChatAction
+    data object StopListening : ChatAction
+    data object ToggleTts : ChatAction
+    data object StopSpeaking : ChatAction
+    data object DownloadVoskModel : ChatAction
 }
 
 @HiltViewModel
@@ -158,6 +171,11 @@ class ChatViewModel @Inject constructor(
     private val ollamaApiService: OllamaApiService,
     @ApplicationContext private val appContext: Context,
 ) : ViewModel() {
+
+    // ASR and TTS - created manually since they're in the app module
+    private val voskSpeechManager = VoskSpeechManager(appContext)
+    private val voskModelDownloadManager = VoskModelDownloadManager(appContext)
+    private val kittenTtsEngine = KittenTtsEngine()
 
     private data class EngineReadyResult(
         val model: LlmModel,
@@ -184,6 +202,30 @@ class ChatViewModel @Inject constructor(
             conversationRepository.getConversationsByMode(ConversationMode.CHAT).collect { convos ->
                 _uiState.update { it.copy(conversations = convos) }
             }
+        }
+
+        // Initialize ASR
+        if (voskModelDownloadManager.isModelReady()) {
+            voskSpeechManager.initModel { ready ->
+                _uiState.update { it.copy(voskModelReady = ready) }
+            }
+        }
+
+        // Observe ASR state
+        viewModelScope.launch {
+            voskSpeechManager.asrState.collect { asrState ->
+                _uiState.update { it.copy(asrState = asrState) }
+                if (asrState.state == VoskSpeechManager.ListeningState.IDLE &&
+                    asrState.finalTranscript.isNotEmpty()
+                ) {
+                    _uiState.update { it.copy(inputText = asrState.finalTranscript) }
+                }
+            }
+        }
+
+        // Initialize TTS
+        viewModelScope.launch {
+            kittenTtsEngine.initialize(appContext)
         }
 
         // Read settings FIRST, then watch models to avoid race conditions
@@ -307,6 +349,14 @@ class ChatViewModel @Inject constructor(
             is ChatAction.SelectOllamaModel -> selectOllamaModel(action.modelName)
             is ChatAction.AttachImage -> _uiState.update { it.copy(pendingImageAttachment = action.imagePath) }
             ChatAction.ClearImageAttachment -> _uiState.update { it.copy(pendingImageAttachment = null) }
+            ChatAction.StartListening -> startListening()
+            ChatAction.StopListening -> voskSpeechManager.stopListening()
+            ChatAction.ToggleTts -> _uiState.update { it.copy(ttsEnabled = !it.ttsEnabled) }
+            ChatAction.StopSpeaking -> {
+                kittenTtsEngine.stop()
+                _uiState.update { it.copy(isSpeaking = false) }
+            }
+            ChatAction.DownloadVoskModel -> downloadVoskModel()
         }
     }
 
@@ -675,19 +725,35 @@ class ChatViewModel @Inject constructor(
             }
 
             try {
-                if (pendingImage != null && File(pendingImage).exists()) {
-                    conversationRepository.addMessage(
-                        Message(
-                            id = UUID.randomUUID().toString(),
-                            conversationId = convo.id,
-                            role = MessageRole.SYSTEM,
-                            content = "The user has attached an image at: $pendingImage. Describe what you see in the image and respond to the user's message in context of the image.",
-                        ),
-                    )
-                }
-
                 val ready = ensureEngineReady(convo)
                     ?: throw IllegalStateException("Model not ready. Please wait for the model to download.")
+
+                val hasVision = ggufEngine.supportsVision()
+
+                if (pendingImage != null && File(pendingImage).exists()) {
+                    if (hasVision) {
+                        // Use multimodal image input
+                        conversationRepository.addMessage(
+                            Message(
+                                id = UUID.randomUUID().toString(),
+                                conversationId = convo.id,
+                                role = MessageRole.USER,
+                                content = text,
+                                attachedImagePath = pendingImage,
+                            ),
+                        )
+                    } else {
+                        // Fallback: describe image in text
+                        conversationRepository.addMessage(
+                            Message(
+                                id = UUID.randomUUID().toString(),
+                                conversationId = convo.id,
+                                role = MessageRole.SYSTEM,
+                                content = "The user has attached an image at: $pendingImage. Describe what you see in the image and respond to the user's message in context of the image.",
+                            ),
+                        )
+                    }
+                }
 
                 val activeModel = ready.model
                 val targetModelId = activeModel.id
@@ -718,18 +784,60 @@ class ChatViewModel @Inject constructor(
                             ensureEngineReadyInternal(convo)
                         }
                         promptTokens = ggufEngine.getContextLengthUsed()
-                        ggufEngine.getResponseAsFlow(
-                            text,
-                            maxTokens = _uiState.value.inferenceParams.maxTokens,
-                        ).collect { piece ->
-                            if (!_uiState.value.isGenerating) throw CancellationException("Generation stopped")
-                            if (firstTokenAtNs == null) {
-                                firstTokenAtNs = System.nanoTime()
-                                firstTokenSnapshot = PerformanceUsageSampler.captureSnapshot()
-                                _uiState.update { state -> state.copy(generationStatus = "Generating response...") }
+
+                        // Check if we should use multimodal image input
+                        val imageFile = pendingImage?.let { File(it) }
+                        if (hasVision && imageFile != null && imageFile.exists()) {
+                            // Use multimodal image input
+                            val bitmap = android.graphics.BitmapFactory.decodeFile(imageFile.absolutePath)
+                            if (bitmap != null) {
+                                val rgbBytes = bitmapToRgbBytes(bitmap)
+                                ggufEngine.startCompletionWithImage(text, rgbBytes, bitmap.width, bitmap.height)
+                                bitmap.recycle()
+
+                                // Token generation loop
+                                while (_uiState.value.isGenerating) {
+                                    val piece = ggufEngine.completionLoop()
+                                    if (piece == "[EOG]") break
+                                    if (piece.isNotEmpty()) {
+                                        if (firstTokenAtNs == null) {
+                                            firstTokenAtNs = System.nanoTime()
+                                            firstTokenSnapshot = PerformanceUsageSampler.captureSnapshot()
+                                            _uiState.update { state -> state.copy(generationStatus = "Generating response...") }
+                                        }
+                                        builder.append(piece)
+                                        _uiState.update { state -> state.copy(streamingText = builder.toString()) }
+                                    }
+                                }
+                                ggufEngine.stopCompletion()
+                            } else {
+                                // Fallback to text-only if bitmap decode fails
+                                ggufEngine.getResponseAsFlow(text, maxTokens = _uiState.value.inferenceParams.maxTokens).collect { piece ->
+                                    if (!_uiState.value.isGenerating) throw CancellationException("Generation stopped")
+                                    if (firstTokenAtNs == null) {
+                                        firstTokenAtNs = System.nanoTime()
+                                        firstTokenSnapshot = PerformanceUsageSampler.captureSnapshot()
+                                        _uiState.update { state -> state.copy(generationStatus = "Generating response...") }
+                                    }
+                                    builder.append(piece)
+                                    _uiState.update { state -> state.copy(streamingText = builder.toString()) }
+                                }
                             }
-                            builder.append(piece)
-                            _uiState.update { state -> state.copy(streamingText = builder.toString()) }
+                        } else {
+                            // Text-only inference
+                            ggufEngine.getResponseAsFlow(
+                                text,
+                                maxTokens = _uiState.value.inferenceParams.maxTokens,
+                            ).collect { piece ->
+                                if (!_uiState.value.isGenerating) throw CancellationException("Generation stopped")
+                                if (firstTokenAtNs == null) {
+                                    firstTokenAtNs = System.nanoTime()
+                                    firstTokenSnapshot = PerformanceUsageSampler.captureSnapshot()
+                                    _uiState.update { state -> state.copy(generationStatus = "Generating response...") }
+                                }
+                                builder.append(piece)
+                                _uiState.update { state -> state.copy(streamingText = builder.toString()) }
+                            }
                         }
                     }
                 } catch (cancelled: CancellationException) {
@@ -855,6 +963,19 @@ class ChatViewModel @Inject constructor(
                         streamingText = "",
                         generationStatus = null,
                     )
+                }
+
+                // TTS playback for AI response
+                if (_uiState.value.ttsEnabled && kittenTtsEngine.isAvailable()) {
+                    val lastAiMessage = _uiState.value.messages.lastOrNull { it.role == MessageRole.ASSISTANT }
+                    if (lastAiMessage != null) {
+                        val filteredText = TtsTextFilter.filter(lastAiMessage.content)
+                        if (filteredText.isNotBlank()) {
+                            _uiState.update { it.copy(isSpeaking = true) }
+                            kittenTtsEngine.speak(filteredText)
+                            _uiState.update { it.copy(isSpeaking = false) }
+                        }
+                    }
                 }
             }
 
@@ -989,6 +1110,49 @@ class ChatViewModel @Inject constructor(
     private fun stopGeneration() {
         viewModelScope.launch {
             cancelGenerationIfRunning()
+        }
+    }
+
+    /**
+     * Convert Android Bitmap to raw RGB byte array for llama.cpp multimodal input.
+     */
+    private fun bitmapToRgbBytes(bitmap: Bitmap): ByteArray {
+        val width = bitmap.width
+        val height = bitmap.height
+        val pixels = IntArray(width * height)
+        bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
+
+        val bytes = ByteArray(width * height * 3)
+        var offset = 0
+        for (pixel in pixels) {
+            bytes[offset++] = (pixel shr 16 and 0xFF).toByte()  // R
+            bytes[offset++] = (pixel shr 8 and 0xFF).toByte()   // G
+            bytes[offset++] = (pixel and 0xFF).toByte()          // B
+        }
+        return bytes
+    }
+
+    private fun startListening() {
+        voskSpeechManager.startListening { transcript ->
+            _uiState.update { it.copy(inputText = transcript) }
+        }
+    }
+
+    private fun downloadVoskModel() {
+        viewModelScope.launch {
+            voskModelDownloadManager.ensureModelReady().collect { status ->
+                when (status) {
+                    is VoskModelDownloadManager.DownloadStatus.Ready -> {
+                        voskSpeechManager.initModel { ready ->
+                            _uiState.update { it.copy(voskModelReady = ready) }
+                        }
+                    }
+                    is VoskModelDownloadManager.DownloadStatus.Error -> {
+                        _uiState.update { it.copy(error = status.message) }
+                    }
+                    else -> { /* Download in progress */ }
+                }
+            }
         }
     }
 

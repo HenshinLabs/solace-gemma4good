@@ -293,6 +293,120 @@ void LLMInference::stopCompletion() {
     _cacheResponseTokens.clear();
 }
 
+bool LLMInference::loadMmproj(const char* mmproj_path) {
+    if (!_model) {
+        LOGe("Cannot load mmproj: text model not loaded");
+        return false;
+    }
+
+    LOGi("Loading mmproj: %s", mmproj_path);
+
+    mtmd_context_params mparams = mtmd_context_params_default();
+    mparams.use_gpu = (_configuredGpuLayers > 0);
+    mparams.n_threads = _configuredThreads;
+    mparams.warmup = true;
+    mparams.print_timings = false;
+
+    _mtmd_ctx = mtmd_init_from_file(mmproj_path, _model, mparams);
+    if (!_mtmd_ctx) {
+        LOGe("Failed to load mmproj from %s", mmproj_path);
+        return false;
+    }
+
+    LOGi("mmproj loaded successfully. Vision: %d", mtmd_support_vision(_mtmd_ctx));
+    return true;
+}
+
+void LLMInference::startCompletionWithImage(const char* query, const unsigned char* image_data, uint32_t nx, uint32_t ny) {
+    if (!_mtmd_ctx) {
+        throw std::runtime_error("No mmproj loaded for image input");
+    }
+
+    _generationReachedEog = false;
+    _promptProcessingTimeUs = 0;
+    _promptProcessingTokens = 0;
+    _responseGenerationTimeUs = 0;
+    _responseNumTokens = 0;
+    _response.clear();
+    _cacheResponseTokens.clear();
+
+    addChatMessage(query, "user");
+
+    // Build formatted prompt with chat template
+    std::vector<common_chat_msg> messages;
+    for (const llama_chat_message& message : _messages) {
+        common_chat_msg msg;
+        msg.role = message.role;
+        msg.content = message.content;
+        messages.push_back(msg);
+    }
+
+    common_chat_templates_inputs inputs;
+    inputs.use_jinja = true;
+    inputs.messages = messages;
+
+    auto templates = common_chat_templates_init(_model, _chatTemplate);
+    std::string prompt = common_chat_templates_apply(templates.get(), inputs).prompt;
+
+    // Insert <__media__> marker where the image should appear
+    std::string marker = mtmd_default_marker();
+    std::string prompt_with_marker;
+
+    // Find the last user turn and insert marker at the start of its content
+    size_t last_user_pos = prompt.rfind("<|turn>user\n");
+    if (last_user_pos != std::string::npos) {
+        size_t content_start = last_user_pos + std::string("<|turn>user\n").length();
+        prompt_with_marker = prompt.substr(0, content_start) + marker + "\n" + prompt.substr(content_start);
+    } else {
+        prompt_with_marker = marker + "\n" + prompt;
+    }
+
+    // Create bitmap from raw RGB data
+    mtmd_bitmap* bmp = mtmd_bitmap_init(nx, ny, image_data);
+    if (!bmp) {
+        throw std::runtime_error("Failed to create bitmap from image data");
+    }
+
+    // Tokenize
+    mtmd_input_text text;
+    text.text = prompt_with_marker.c_str();
+    text.add_special = true;
+    text.parse_special = true;
+
+    mtmd_input_chunks* chunks = mtmd_input_chunks_init();
+    const mtmd_bitmap* bitmaps[] = { bmp };
+    int32_t res = mtmd_tokenize(_mtmd_ctx, chunks, &text, bitmaps, 1);
+    mtmd_bitmap_free(bmp);
+
+    if (res != 0) {
+        mtmd_input_chunks_free(chunks);
+        throw std::runtime_error("mtmd_tokenize failed");
+    }
+
+    // Eval chunks (handles both text and image encoding+decoding)
+    llama_pos new_n_past = 0;
+    llama_memory_clear(llama_get_memory(_ctx), false);
+    res = mtmd_helper_eval_chunks(_mtmd_ctx, _ctx, chunks, 0, 0,
+                                   llama_n_ctx(_ctx), true, &new_n_past);
+    mtmd_input_chunks_free(chunks);
+
+    if (res != 0) {
+        throw std::runtime_error("mtmd_helper_eval_chunks failed");
+    }
+
+    // Set up batch for token generation
+    _currToken = llama_token_bos(llama_model_get_vocab(_model));
+    if (_batch != nullptr) {
+        delete _batch;
+        _batch = nullptr;
+    }
+    _batch = new llama_batch();
+    _batch->token = &_currToken;
+    _batch->n_tokens = 1;
+
+    LOGi("Image completion started: %ux%u", nx, ny);
+}
+
 std::string LLMInference::benchModel(int pp, int tg, int pl, int nr) {
 // Full PP+TG benchmark (from SmolChat pattern)
 g_batch = llama_batch_init(pp, 0, pl);
