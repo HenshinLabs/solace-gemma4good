@@ -1,0 +1,474 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Solace — AI Mental Health Companion | Gemma 4 Good Hackathon</title>
+    <meta name="description" content="Solace is a compassionate AI companion for mental wellness powered by Google's Gemma 4 E2B model, running entirely on-device. Privacy-first, offline-capable, with guided therapeutic sessions.">
+    <meta name="keywords" content="Solace, mental health, AI companion, Gemma 4, on-device AI, Android, llama.cpp, anxiety relief, crisis support, offline AI, GGUF, multimodal, voice assistant, mental wellness, hackathon">
+    <meta name="author" content="HenshinLabs">
+    <meta name="robots" content="index, follow">
+
+    <!-- Open Graph / Facebook -->
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://henshinlabs.github.io/solace-gemma4good/">
+    <meta property="og:title" content="Solace — AI Mental Health Companion">
+    <meta property="og:description" content="A compassionate AI companion for mental wellness powered by Gemma 4, running entirely on-device. Privacy-first, offline-capable.">
+    <meta property="og:image" content="https://raw.githubusercontent.com/HenshinLabs/solace-gemma4good/main/branding/solace-logo.svg">
+    <meta property="og:site_name" content="Solace">
+
+    <!-- Twitter -->
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:url" content="https://henshinlabs.github.io/solace-gemma4good/">
+    <meta name="twitter:title" content="Solace — AI Mental Health Companion">
+    <meta name="twitter:description" content="A compassionate AI companion for mental wellness powered by Gemma 4, running entirely on-device.">
+    <meta name="twitter:image" content="https://raw.githubusercontent.com/HenshinLabs/solace-gemma4good/main/branding/solace-logo.svg">
+
+    <!-- Canonical URL -->
+    <link rel="canonical" href="https://henshinlabs.github.io/solace-gemma4good/">
+
+    <!-- JSON-LD Structured Data -->
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "SoftwareApplication",
+        "name": "Solace",
+        "operatingSystem": "Android 12+",
+        "applicationCategory": "HealthApplication",
+        "description": "A compassionate AI companion for mental wellness powered by Gemma 4, running entirely on-device.",
+        "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+        "author": {
+            "@type": "Organization",
+            "name": "HenshinLabs",
+            "url": "https://github.com/HenshinLabs"
+        },
+        "downloadUrl": "https://github.com/HenshinLabs/solace-gemma4good/releases/tag/v2.0.5",
+        "softwareVersion": "2.0.5",
+        "fileSize": "173 MB"
+    }
+    </script>
+
+    <style>
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+        :root {
+            --blue: #5B8DB8;
+            --blue-light: #8BBAD4;
+            --sage: #A8D5BA;
+            --peach: #F4A97F;
+            --purple: #7E57C2;
+            --bg: #0F1416;
+            --surface: #1A1E20;
+            --surface-2: #242829;
+            --text: #E2E6E8;
+            --text-dim: #8A9499;
+            --red: #E57373;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.6;
+            min-height: 100vh;
+        }
+
+        .container { max-width: 960px; margin: 0 auto; padding: 0 24px; }
+
+        /* Hero */
+        .hero {
+            text-align: center;
+            padding: 80px 24px 60px;
+        }
+        .hero-logo {
+            width: 160px;
+            height: 160px;
+            margin: 0 auto 32px;
+        }
+        .hero-logo img { width: 100%; height: 100%; }
+        .hero h1 {
+            font-size: 3rem;
+            font-weight: 700;
+            color: var(--blue-light);
+            margin-bottom: 12px;
+            letter-spacing: -0.02em;
+        }
+        .hero .tagline {
+            font-size: 1.2rem;
+            color: var(--text-dim);
+            max-width: 600px;
+            margin: 0 auto 12px;
+        }
+        .hero .hackathon-badge {
+            display: inline-block;
+            background: rgba(126,87,194,0.15);
+            color: var(--purple);
+            font-size: 0.85rem;
+            font-weight: 600;
+            padding: 6px 16px;
+            border-radius: 20px;
+            margin-bottom: 28px;
+            border: 1px solid rgba(126,87,194,0.3);
+        }
+        .hero-buttons {
+            display: flex;
+            gap: 16px;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 14px 28px;
+            border-radius: 12px;
+            font-size: 1rem;
+            font-weight: 600;
+            text-decoration: none;
+            transition: transform 0.15s, box-shadow 0.15s;
+        }
+        .btn:hover { transform: translateY(-2px); box-shadow: 0 8px 24px rgba(0,0,0,0.3); }
+        .btn-primary { background: var(--blue); color: #fff; }
+        .btn-secondary { background: var(--surface-2); color: var(--text); border: 1px solid #333; }
+
+        /* Features */
+        .features {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+            gap: 20px;
+            padding: 40px 0;
+        }
+        .feature-card {
+            background: var(--surface);
+            border-radius: 16px;
+            padding: 28px;
+            border: 1px solid #2A2E30;
+        }
+        .feature-icon {
+            width: 48px;
+            height: 48px;
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 24px;
+            margin-bottom: 16px;
+        }
+        .feature-card h3 { font-size: 1.1rem; margin-bottom: 8px; color: var(--text); }
+        .feature-card p { font-size: 0.9rem; color: var(--text-dim); }
+
+        /* QR + Download */
+        .release-section {
+            background: var(--surface);
+            border-radius: 20px;
+            padding: 40px;
+            margin: 40px 0;
+            border: 1px solid #2A2E30;
+        }
+        .release-section h2 { font-size: 1.5rem; margin-bottom: 8px; }
+        .release-section .version {
+            color: var(--sage);
+            font-weight: 600;
+            font-size: 1rem;
+            margin-bottom: 20px;
+        }
+
+        .qr-download-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 24px;
+            margin-top: 24px;
+        }
+        .qr-card {
+            text-align: center;
+            background: var(--surface-2);
+            border-radius: 16px;
+            padding: 28px 20px;
+            border: 1px solid #333;
+        }
+        .qr-card h4 { margin-bottom: 16px; font-size: 1rem; }
+        .qr-card img {
+            width: 180px;
+            height: 180px;
+            border-radius: 8px;
+            background: #fff;
+            padding: 8px;
+        }
+        .qr-card p {
+            margin-top: 12px;
+            font-size: 0.85rem;
+            color: var(--text-dim);
+        }
+        .qr-card a {
+            display: inline-block;
+            margin-top: 8px;
+            color: var(--blue-light);
+            text-decoration: none;
+            font-size: 0.9rem;
+            font-weight: 500;
+        }
+        .qr-card a:hover { text-decoration: underline; }
+
+        .download-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+            margin-top: 24px;
+        }
+        .download-card {
+            background: var(--surface-2);
+            border-radius: 12px;
+            padding: 20px;
+            text-decoration: none;
+            color: var(--text);
+            border: 1px solid #333;
+            transition: border-color 0.2s;
+        }
+        .download-card:hover { border-color: var(--blue); }
+        .download-card h4 { font-size: 1rem; margin-bottom: 4px; }
+        .download-card .size { font-size: 0.85rem; color: var(--text-dim); }
+        .download-card .arrow { float: right; color: var(--blue); font-size: 1.2rem; }
+
+        /* Crisis */
+        .crisis {
+            background: #2A1A1A;
+            border: 1px solid #4A2020;
+            border-radius: 16px;
+            padding: 28px;
+            margin: 40px 0;
+        }
+        .crisis h3 { color: var(--red); margin-bottom: 12px; font-size: 1.1rem; }
+        .crisis-links { list-style: none; }
+        .crisis-links li { margin-bottom: 8px; }
+        .crisis-links a { color: var(--text); text-decoration: none; font-size: 0.95rem; }
+        .crisis-links a:hover { color: var(--red); }
+
+        /* Team */
+        .team-section {
+            text-align: center;
+            padding: 40px 0;
+        }
+        .team-section h2 { font-size: 1.5rem; margin-bottom: 24px; }
+        .team-grid {
+            display: flex;
+            justify-content: center;
+            gap: 32px;
+            flex-wrap: wrap;
+        }
+        .team-card {
+            background: var(--surface);
+            border: 1px solid #2A2E30;
+            border-radius: 16px;
+            padding: 28px 32px;
+            text-align: center;
+            transition: border-color 0.2s;
+            text-decoration: none;
+            color: var(--text);
+            min-width: 220px;
+        }
+        .team-card:hover { border-color: var(--blue); }
+        .team-card img {
+            width: 80px;
+            height: 80px;
+            border-radius: 50%;
+            margin-bottom: 12px;
+            border: 3px solid var(--surface-2);
+        }
+        .team-card h4 { font-size: 1rem; margin-bottom: 4px; }
+        .team-card .role { font-size: 0.85rem; color: var(--text-dim); }
+        .team-card .handle {
+            display: inline-block;
+            margin-top: 8px;
+            color: var(--blue-light);
+            font-size: 0.85rem;
+        }
+
+        /* Tech */
+        .tech-badges {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            justify-content: center;
+            margin: 32px 0;
+        }
+        .badge {
+            background: var(--surface);
+            border: 1px solid #2A2E30;
+            border-radius: 8px;
+            padding: 6px 14px;
+            font-size: 0.8rem;
+            color: var(--text-dim);
+        }
+
+        /* Footer */
+        footer {
+            text-align: center;
+            padding: 40px 24px;
+            color: var(--text-dim);
+            font-size: 0.85rem;
+            border-top: 1px solid #1E2224;
+        }
+        footer a { color: var(--blue-light); text-decoration: none; }
+        footer a:hover { text-decoration: underline; }
+
+        @media (max-width: 700px) {
+            .hero { padding: 48px 16px 40px; }
+            .hero h1 { font-size: 2.2rem; }
+            .release-section { padding: 24px; }
+            .qr-download-grid { grid-template-columns: 1fr; }
+            .download-grid { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+
+    <!-- Hero -->
+    <section class="hero">
+        <div class="hero-logo">
+            <img src="https://raw.githubusercontent.com/HenshinLabs/solace-gemma4good/main/branding/solace-logo.svg" alt="Solace Logo — Open hand with heart, symbolizing compassionate AI mental health support">
+        </div>
+        <h1>Solace</h1>
+        <p class="tagline">A compassionate AI companion for mental wellness — powered by Gemma 4, running entirely on your device.</p>
+        <div class="hackathon-badge">Kaggle &middot; Gemma 4 Good Hackathon</div>
+        <div class="hero-buttons">
+            <a href="https://github.com/HenshinLabs/solace-gemma4good/releases/tag/v2.0.5" class="btn btn-primary">
+                &#11015; Download v2.0.5
+            </a>
+            <a href="https://github.com/HenshinLabs/solace-gemma4good" class="btn btn-secondary">
+                GitHub Repository
+            </a>
+        </div>
+    </section>
+
+    <!-- Features -->
+    <section class="features" aria-label="Features">
+        <div class="feature-card">
+            <div class="feature-icon" style="background: rgba(91,141,184,0.15);" aria-hidden="true">&#128172;</div>
+            <h3>AI Companion Chat</h3>
+            <p>Natural, empathetic conversations powered by Gemma 4 E2B with 128K context, running locally on your phone.</p>
+        </div>
+        <div class="feature-card">
+            <div class="feature-icon" style="background: rgba(168,213,186,0.15);" aria-hidden="true">&#129495;</div>
+            <h3>Guided Sessions</h3>
+            <p>Evidence-based therapeutic exercises for anxiety, panic attacks, sleep, daily check-ins, and crisis support.</p>
+        </div>
+        <div class="feature-card">
+            <div class="feature-icon" style="background: rgba(244,169,127,0.15);" aria-hidden="true">&#127908;</div>
+            <h3>Voice Interaction</h3>
+            <p>Offline speech-to-text with Vosk and text-to-speech with KittenTTS. No cloud services required.</p>
+        </div>
+        <div class="feature-card">
+            <div class="feature-icon" style="background: rgba(126,87,194,0.15);" aria-hidden="true">&#128065;</div>
+            <h3>Vision Understanding</h3>
+            <p>Attach images for the AI to analyze. Powered by Gemma 4's native multimodal capabilities.</p>
+        </div>
+        <div class="feature-card">
+            <div class="feature-icon" style="background: rgba(229,115,115,0.15);" aria-hidden="true">&#128737;</div>
+            <h3>Crisis Resources</h3>
+            <p>Always-accessible emergency contacts: 988 Lifeline, iCall India, Vandrevala Foundation, Crisis Text Line.</p>
+        </div>
+        <div class="feature-card">
+            <div class="feature-icon" style="background: rgba(102,187,106,0.15);" aria-hidden="true">&#128274;</div>
+            <h3>100% Private</h3>
+            <p>All AI inference happens on-device. Your conversations never leave your phone. Works offline.</p>
+        </div>
+    </section>
+
+    <!-- QR Codes + Downloads -->
+    <section class="release-section" aria-label="Download">
+        <h2>Get Solace</h2>
+        <p class="version">v2.0.5 &mdash; Latest Release</p>
+        <p style="color: var(--text-dim); font-size: 0.95rem;">
+            Scan a QR code or download directly. Requires Android 12+. First launch downloads the Gemma 4 model (~4 GB).
+        </p>
+
+        <div class="qr-download-grid">
+            <div class="qr-card">
+                <h4>Repository</h4>
+                <img src="https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=https://github.com/HenshinLabs/solace-gemma4good&bgcolor=ffffff&color=1A1E20&margin=8" alt="QR code linking to Solace GitHub repository" width="180" height="180">
+                <p>Scan to visit the GitHub repository</p>
+                <a href="https://github.com/HenshinLabs/solace-gemma4good">github.com/HenshinLabs/solace-gemma4good</a>
+            </div>
+            <div class="qr-card">
+                <h4>Download APK</h4>
+                <img src="https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=https://github.com/HenshinLabs/solace-gemma4good/releases/download/v2.0.5/Solace-v2.0.5-release.apk&bgcolor=ffffff&color=1A1E20&margin=8" alt="QR code to download Solace v2.0.5 release APK" width="180" height="180">
+                <p>Scan to download the release APK</p>
+                <a href="https://github.com/HenshinLabs/solace-gemma4good/releases/download/v2.0.5/Solace-v2.0.5-release.apk">Solace-v2.0.5-release.apk (~173 MB)</a>
+            </div>
+        </div>
+
+        <div class="download-grid">
+            <a href="https://github.com/HenshinLabs/solace-gemma4good/releases/download/v2.0.5/Solace-v2.0.5-release.apk" class="download-card">
+                <span class="arrow">&#8595;</span>
+                <h4>Solace-v2.0.5-release.apk</h4>
+                <span class="size">~173 MB &middot; R8 minified, production</span>
+            </a>
+            <a href="https://github.com/HenshinLabs/solace-gemma4good/releases/download/v2.0.5/Solace-v2.0.5-debug.apk" class="download-card">
+                <span class="arrow">&#8595;</span>
+                <h4>Solace-v2.0.5-debug.apk</h4>
+                <span class="size">~229 MB &middot; Unminified, development</span>
+            </a>
+        </div>
+    </section>
+
+    <!-- Crisis Resources -->
+    <section class="crisis" aria-label="Crisis Resources">
+        <h3>In crisis? You are not alone.</h3>
+        <ul class="crisis-links">
+            <li><a href="tel:988">988 Suicide &amp; Crisis Lifeline (US) — call or text 988</a></li>
+            <li><a href="tel:9152987821">iCall India — 9152987821</a></li>
+            <li><a href="tel:18602662345">Vandrevala Foundation — 18602662345</a></li>
+            <li><a href="sms:741741?body=HOME">Crisis Text Line — text HOME to 741741</a></li>
+        </ul>
+    </section>
+
+    <!-- Team -->
+    <section class="team-section" aria-label="Team">
+        <h2>Built by HenshinLabs</h2>
+        <div class="team-grid">
+            <a href="https://github.com/Shuvam-Banerji-Seal" class="team-card" target="_blank" rel="noopener">
+                <img src="https://avatars.githubusercontent.com/u/118100973?v=4" alt="Shuvam Banerji Seal" width="80" height="80">
+                <h4>Shuvam Banerji Seal</h4>
+                <div class="role">Lead Developer</div>
+                <span class="handle">@Shuvam-Banerji-Seal</span>
+            </a>
+            <a href="https://github.com/XAheli" class="team-card" target="_blank" rel="noopener">
+                <img src="https://avatars.githubusercontent.com/u/121807815?v=4" alt="Aheli" width="80" height="80">
+                <h4>Aheli</h4>
+                <div class="role">Co-Founder, HenshinLabs</div>
+                <span class="handle">@XAheli</span>
+            </a>
+        </div>
+    </section>
+
+    <!-- Tech Stack -->
+    <div class="tech-badges" aria-label="Technology stack">
+        <span class="badge">Kotlin 2.1.0</span>
+        <span class="badge">Jetpack Compose</span>
+        <span class="badge">Gemma 4 E2B</span>
+        <span class="badge">llama.cpp</span>
+        <span class="badge">Vosk ASR</span>
+        <span class="badge">KittenTTS</span>
+        <span class="badge">C++20 / JNI</span>
+        <span class="badge">Android 12+</span>
+        <span class="badge">GPL v3</span>
+    </div>
+
+</div>
+
+<footer>
+    <p>
+        <strong>Solace</strong> &mdash; A submission for the
+        <a href="https://www.kaggle.com/competitions/gemma-4-good-hackathon">Gemma 4 Good Hackathon</a>
+        by <a href="https://github.com/HenshinLabs">HenshinLabs</a>
+    </p>
+    <p style="margin-top: 8px;">
+        Based on <a href="https://github.com/Shuvam-Banerji-Seal/Master_LLM_app">MasterLLM</a> by Shuvam Banerji Seal
+        &middot; Licensed under <a href="https://github.com/HenshinLabs/solace-gemma4good/blob/main/LICENSE">GPL v3</a>
+    </p>
+</footer>
+
+</body>
+</html>
