@@ -317,6 +317,357 @@
             .release-section { padding: 24px; }
             .qr-download-grid { grid-template-columns: 1fr; }
             .download-grid { grid-template-columns: 1fr; }
+            .phone-frame { width: 200px !important; height: 400px !important; }
+        }
+
+        /* ── 3D Screenshot Stack ────────────────────────── */
+        .screenshots-section { padding: 60px 0 40px; }
+
+        .phone-stack-wrap {
+            perspective: 1200px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 560px;
+            position: relative;
+        }
+
+        .phone-stack {
+            position: relative;
+            width: 260px;
+            height: 520px;
+            transform-style: preserve-3d;
+        }
+
+        .phone-frame {
+            position: absolute;
+            width: 260px;
+            height: 520px;
+            border-radius: 32px;
+            overflow: hidden;
+            border: 3px solid #333;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.05);
+            transition: transform 0.6s cubic-bezier(0.23, 1, 0.32, 1), opacity 0.6s ease;
+            cursor: pointer;
+            background: #000;
+        }
+
+        .phone-frame.active {
+            transform: translateZ(80px) rotateY(0deg) scale(1.05);
+            z-index: 10;
+            opacity: 1;
+        }
+        .phone-frame.prev {
+            transform: translateZ(20px) translateX(-180px) rotateY(25deg) scale(0.88);
+            z-index: 5;
+            opacity: 0.7;
+        }
+        .phone-frame.prev2 {
+            transform: translateZ(-40px) translateX(-320px) rotateY(40deg) scale(0.76);
+            z-index: 3;
+            opacity: 0.4;
+        }
+        .phone-frame.next {
+            transform: translateZ(20px) translateX(180px) rotateY(-25deg) scale(0.88);
+            z-index: 5;
+            opacity: 0.7;
+        }
+        .phone-frame.next2 {
+            transform: translateZ(-40px) translateX(320px) rotateY(-40deg) scale(0.76);
+            z-index: 3;
+            opacity: 0.4;
+        }
+        .phone-frame.hidden {
+            transform: translateZ(-100px) scale(0.6);
+            z-index: 1;
+            opacity: 0;
+            pointer-events: none;
+        }
+
+        .phone-placeholder {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 400px;
+            background: var(--surface);
+            border-radius: 24px;
+            border: 2px dashed #333;
+            text-align: center;
+            padding: 32px;
+        }
+
+        .phone-notch {
+            position: absolute;
+            top: 0;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 80px;
+            height: 20px;
+            background: #000;
+            border-radius: 0 0 14px 14px;
+            z-index: 20;
+        }
+
+        .phone-screen {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            position: relative;
+        }
+
+        .phone-label {
+            position: absolute;
+            bottom: -36px;
+            left: 50%;
+            transform: translateX(-50%);
+            color: var(--text-dim);
+            font-size: 0.85rem;
+            font-weight: 500;
+            white-space: nowrap;
+        }
+
+        .screen-dots {
+            display: flex;
+            justify-content: center;
+            gap: 10px;
+            margin-top: 56px;
+        }
+        .dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            border: none;
+            background: var(--surface-2);
+            cursor: pointer;
+            transition: background 0.3s, transform 0.3s;
+        }
+        .dot.active { background: var(--blue); transform: scale(1.3); }
+        .dot:hover { background: var(--blue-light); }
+
+        /* ── Mock UI Elements (fallback when no screenshots) ── */
+        .mock-topbar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 28px 16px 10px;
+        }
+        .mock-logo-text {
+            font-size: 1rem;
+            font-weight: 700;
+            color: var(--text);
+        }
+        .mock-greeting {
+            text-align: center;
+            color: var(--blue-light);
+            font-size: 1.1rem;
+            font-weight: 600;
+            padding: 12px 16px 8px;
+            line-height: 1.4;
+        }
+        .mock-chips {
+            display: flex;
+            gap: 6px;
+            justify-content: center;
+            padding: 4px 12px;
+        }
+        .mock-chip {
+            background: var(--surface-2);
+            color: var(--text-dim);
+            font-size: 0.65rem;
+            padding: 5px 10px;
+            border-radius: 12px;
+            border: 1px solid #333;
+        }
+        .mock-chip.chip-red { color: var(--red); border-color: #4A2020; }
+
+        .mock-card {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            background: var(--surface);
+            margin: 6px 14px;
+            padding: 10px 12px;
+            border-radius: 10px;
+            border: 1px solid #2A2E30;
+        }
+        .mock-card-icon {
+            width: 28px;
+            height: 28px;
+            border-radius: 8px;
+            background: rgba(91,141,184,0.15);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 14px;
+            flex-shrink: 0;
+        }
+        .mock-card-text {
+            font-size: 0.75rem;
+            font-weight: 500;
+            color: var(--text);
+        }
+        .mock-crisis-bar {
+            background: #2A1A1A;
+            color: var(--red);
+            font-size: 0.65rem;
+            font-weight: 600;
+            text-align: center;
+            padding: 8px;
+            margin: 10px 14px 0;
+            border-radius: 8px;
+            border: 1px solid #4A2020;
+        }
+        .mock-nav {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            display: flex;
+            justify-content: space-around;
+            background: var(--surface);
+            padding: 8px 0 12px;
+            border-top: 1px solid #2A2E30;
+        }
+        .mock-nav-item {
+            font-size: 1rem;
+            opacity: 0.4;
+        }
+        .mock-nav-item.active { opacity: 1; }
+
+        /* Chat mockup */
+        .mock-chat-area {
+            padding: 8px 12px;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            height: 370px;
+            overflow: hidden;
+        }
+        .mock-bubble {
+            max-width: 80%;
+            padding: 8px 12px;
+            border-radius: 14px;
+            font-size: 0.65rem;
+            line-height: 1.4;
+        }
+        .mock-bubble.bot {
+            align-self: flex-start;
+            background: var(--surface-2);
+            color: var(--text);
+            border-bottom-left-radius: 4px;
+        }
+        .mock-bubble.user {
+            align-self: flex-end;
+            background: rgba(91,141,184,0.3);
+            color: var(--text);
+            border-bottom-right-radius: 4px;
+        }
+        .mock-input-bar {
+            position: absolute;
+            bottom: 52px;
+            left: 0;
+            right: 0;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 12px;
+            background: var(--surface);
+            border-top: 1px solid #2A2E30;
+        }
+        .mock-mic { font-size: 1rem; opacity: 0.5; }
+        .mock-text-input {
+            flex: 1;
+            font-size: 0.7rem;
+            color: var(--text-dim);
+            background: var(--surface-2);
+            padding: 6px 10px;
+            border-radius: 16px;
+        }
+        .mock-send { color: var(--blue); font-size: 0.9rem; }
+
+        /* Session cards */
+        .mock-session-card {
+            margin: 6px 14px;
+            padding: 14px;
+            border-radius: 14px;
+        }
+        .mock-session-icon { font-size: 1.2rem; margin-bottom: 6px; }
+        .mock-session-title { font-size: 0.8rem; font-weight: 700; margin-bottom: 2px; }
+        .mock-session-desc { font-size: 0.65rem; margin-bottom: 8px; }
+        .mock-session-btn {
+            display: inline-block;
+            color: #fff;
+            font-size: 0.65rem;
+            font-weight: 600;
+            padding: 5px 14px;
+            border-radius: 8px;
+        }
+
+        /* Download mockup */
+        .mock-info-row {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.7rem;
+            color: var(--text-dim);
+            padding: 4px 0;
+            border-bottom: 1px solid #2A2E30;
+        }
+        .mock-progress-bar {
+            height: 6px;
+            background: var(--surface-2);
+            border-radius: 3px;
+            overflow: hidden;
+        }
+        .mock-progress-fill {
+            height: 100%;
+            background: var(--blue);
+            border-radius: 3px;
+            transition: width 1s ease;
+        }
+
+        /* Settings mockup */
+        .mock-setting-group {
+            margin: 8px 14px;
+            background: var(--surface);
+            border-radius: 12px;
+            border: 1px solid #2A2E30;
+            overflow: hidden;
+        }
+        .mock-setting-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px 14px;
+            font-size: 0.7rem;
+            color: var(--text);
+            border-bottom: 1px solid #2A2E30;
+        }
+        .mock-setting-item:last-child { border-bottom: none; }
+        .mock-setting-header {
+            padding: 8px 14px;
+            font-size: 0.65rem;
+            font-weight: 600;
+            color: var(--text-dim);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .mock-toggle {
+            width: 32px;
+            height: 18px;
+            border-radius: 9px;
+            position: relative;
+        }
+        .mock-toggle.on { background: var(--blue); }
+        .mock-toggle.on::after {
+            content: '';
+            position: absolute;
+            right: 2px;
+            top: 2px;
+            width: 14px;
+            height: 14px;
+            background: #fff;
+            border-radius: 50%;
         }
     </style>
 </head>
@@ -374,6 +725,30 @@
             <h3>100% Private</h3>
             <p>All AI inference happens on-device. Your conversations never leave your phone. Works offline.</p>
         </div>
+    </section>
+
+    <!-- 3D Screenshot Stack -->
+    <section class="screenshots-section" aria-label="App Screenshots">
+        <h2 style="text-align:center; font-size:1.8rem; margin-bottom:8px;">App Preview</h2>
+        <p style="text-align:center; color:var(--text-dim); margin-bottom:40px;">Screenshots from Solace running on-device.</p>
+
+        <div class="phone-stack-wrap">
+            <div class="phone-stack" id="phoneStack">
+                <div class="phone-placeholder">
+                    <div style="font-size:2.5rem; margin-bottom:12px;">&#128247;</div>
+                    <div style="color:var(--text-dim); font-size:0.95rem;">Loading screenshots...</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="screen-dots" id="screenDots"></div>
+
+        <p style="text-align:center; margin-top:24px;">
+            <a href="https://github.com/HenshinLabs/solace-gemma4good/tree/main/assets/app_screenshots"
+               style="color:var(--blue-light); font-size:0.85rem; text-decoration:none;">
+                View all screenshots on GitHub &#8594;
+            </a>
+        </p>
     </section>
 
     <!-- QR Codes + Downloads -->
@@ -469,6 +844,144 @@
         &middot; Licensed under <a href="https://github.com/HenshinLabs/solace-gemma4good/blob/main/LICENSE">GPL v3</a>
     </p>
 </footer>
+
+<script>
+(function() {
+    const REPO_API = 'https://api.github.com/repos/HenshinLabs/solace-gemma4good/contents/assets/app_screenshots';
+    const RAW_BASE = 'https://raw.githubusercontent.com/HenshinLabs/solace-gemma4good/main/assets/app_screenshots/';
+    const stack = document.getElementById('phoneStack');
+    const dotsWrap = document.getElementById('screenDots');
+
+    let frames = [];
+    let dots = [];
+    let current = 0;
+    let total = 0;
+    let auto = null;
+
+    async function loadScreenshots() {
+        try {
+            const res = await fetch(REPO_API);
+            if (!res.ok) throw new Error('API ' + res.status);
+            const files = await res.json();
+            const images = files
+                .filter(f => /\.(png|jpg|jpeg|webp|gif)$/i.test(f.name))
+                .sort((a, b) => a.name.localeCompare(b.name));
+
+            if (images.length === 0) {
+                showPlaceholder();
+                return;
+            }
+
+            total = images.length;
+            stack.innerHTML = '';
+            dotsWrap.innerHTML = '';
+
+            images.forEach((img, i) => {
+                const name = img.name.replace(/\.[^.]+$/, '').replace(/[-_]/g, ' ');
+
+                const frame = document.createElement('div');
+                frame.className = 'phone-frame';
+                frame.dataset.index = i;
+
+                const notch = document.createElement('div');
+                notch.className = 'phone-notch';
+
+                const screen = document.createElement('div');
+                screen.className = 'phone-screen';
+
+                const image = document.createElement('img');
+                image.src = RAW_BASE + encodeURIComponent(img.name);
+                image.alt = 'Solace app — ' + name;
+                image.loading = 'lazy';
+                image.style.cssText = 'width:100%; height:100%; object-fit:cover; object-position:top;';
+
+                const label = document.createElement('div');
+                label.className = 'phone-label';
+                label.textContent = name.charAt(0).toUpperCase() + name.slice(1);
+
+                screen.appendChild(image);
+                frame.appendChild(notch);
+                frame.appendChild(screen);
+                frame.appendChild(label);
+                stack.appendChild(frame);
+
+                const dot = document.createElement('button');
+                dot.className = 'dot' + (i === 0 ? ' active' : '');
+                dot.dataset.index = i;
+                dot.setAttribute('aria-label', name + ' screenshot');
+                dotsWrap.appendChild(dot);
+
+                frame.addEventListener('click', () => {
+                    if (frame.classList.contains('prev') || frame.classList.contains('prev2')) {
+                        updateStack((current - 1 + total) % total);
+                    } else if (frame.classList.contains('next') || frame.classList.contains('next2')) {
+                        updateStack((current + 1) % total);
+                    }
+                });
+
+                dot.addEventListener('click', () => updateStack(i));
+            });
+
+            frames = stack.querySelectorAll('.phone-frame');
+            dots = dotsWrap.querySelectorAll('.dot');
+
+            updateStack(0);
+            startAuto();
+
+        } catch (e) {
+            console.warn('Could not load screenshots:', e);
+            showPlaceholder();
+        }
+    }
+
+    function showPlaceholder() {
+        stack.innerHTML =
+            '<div class="phone-placeholder">' +
+            '<div style="font-size:2.5rem;margin-bottom:12px;">&#128247;</div>' +
+            '<div style="color:var(--text-dim);font-size:0.95rem;">Screenshots coming soon</div>' +
+            '<div style="color:var(--text-dim);font-size:0.8rem;margin-top:8px;">Add images to assets/app_screenshots/</div>' +
+            '</div>';
+        dotsWrap.innerHTML = '';
+    }
+
+    function updateStack(idx) {
+        if (total === 0) return;
+        current = idx;
+        frames.forEach((f, i) => {
+            f.className = 'phone-frame';
+            const diff = ((i - idx + total) % total);
+            if (diff === 0) f.classList.add('active');
+            else if (diff === 1) f.classList.add('next');
+            else if (diff === 2 && total > 3) f.classList.add('next2');
+            else if (diff === total - 1) f.classList.add('prev');
+            else if (diff === total - 2 && total > 3) f.classList.add('prev2');
+            else f.classList.add('hidden');
+        });
+        dots.forEach((d, i) => d.classList.toggle('active', i === idx));
+    }
+
+    function startAuto() {
+        stopAuto();
+        auto = setInterval(() => updateStack((current + 1) % total), 4000);
+    }
+    function stopAuto() { if (auto) clearInterval(auto); }
+
+    const wrap = document.querySelector('.phone-stack-wrap');
+    wrap.addEventListener('mouseenter', stopAuto);
+    wrap.addEventListener('mouseleave', startAuto);
+
+    let touchStartX = 0;
+    wrap.addEventListener('touchstart', e => { touchStartX = e.touches[0].clientX; }, { passive: true });
+    wrap.addEventListener('touchend', e => {
+        const dx = e.changedTouches[0].clientX - touchStartX;
+        if (Math.abs(dx) > 40) {
+            updateStack(dx < 0 ? (current + 1) % total : (current - 1 + total) % total);
+        }
+    }, { passive: true });
+
+    loadScreenshots();
+})();
+</script>
 
 </body>
 </html>
