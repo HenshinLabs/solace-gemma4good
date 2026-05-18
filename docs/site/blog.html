@@ -1,0 +1,492 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Solace — Technical Deep Dive | Gemma 4 on ARM via llama.cpp</title>
+    <meta name="description" content="How we built Solace: running Gemma 4 E2B on Android via llama.cpp with 10-12 tokens/sec inference, multimodal vision, and offline voice — from zero to production.">
+    <meta name="keywords" content="Gemma 4, llama.cpp, GGUF, ARM64, Android, on-device AI, inference optimization, SIMD, Vulkan, multimodal, mental health, hackathon">
+    <meta name="author" content="HenshinLabs">
+    <meta property="og:type" content="article">
+    <meta property="og:title" content="Solace — Technical Deep Dive: Gemma 4 on ARM via llama.cpp">
+    <meta property="og:description" content="From zero inference to 40 tokens/sec on Qwen 0.8B and 10-12 tokens/sec on Gemma 4 E2B — the technical journey of building an on-device mental health companion.">
+    <meta property="og:image" content="https://avatars.githubusercontent.com/u/285745466?s=400&v=4">
+    <link rel="canonical" href="https://henshinlabs.github.io/solace-gemma4good/blog.html">
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+    <script>mermaid.initialize({startOnLoad:true,theme:'dark',themeVariables:{primaryColor:'#8AAEC4',primaryTextColor:'#E8DDD0',primaryBorderColor:'#3E302B',lineColor:'#8A7A66',secondaryColor:'#242019',tertiaryColor:'#1A1714',background:'#0E0C0A',mainBkg:'#1A1714',nodeBorder:'#3E302B',clusterBkg:'#1A1714',titleColor:'#E8DDD0',edgeLabelBackground:'#242019'}})</script>
+    <style>
+        *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+        :root{
+            --bg:#0E0C0A;--surface:#1A1714;--surface-2:#242019;--surface-3:#2E2920;
+            --latte:#C4B49A;--cream:#E8DDD0;--mocha:#8A7A66;--espresso:#F5EDE4;
+            --blue:#8AAEC4;--blue-mist:rgba(138,174,196,0.15);--blue-glow:rgba(138,174,196,0.25);
+            --text:#E8DDD0;--text-dim:#8A7A66;--red:#D4847A;--green:#7AAE8E;--yellow:#D4C47A;
+        }
+        html{scroll-behavior:smooth}
+        body{font-family:'Segoe UI',system-ui,-apple-system,sans-serif;background:var(--bg);color:var(--text);line-height:1.7;overflow-x:hidden}
+        .container{max-width:800px;margin:0 auto;padding:0 24px}
+        a{color:var(--blue);text-decoration:none}
+        a:hover{color:var(--cream)}
+
+        /* ── Nav ─────────────────────────────── */
+        .topnav{display:flex;align-items:center;justify-content:space-between;padding:16px 24px;background:var(--surface);border-bottom:1px solid var(--surface-3);position:sticky;top:0;z-index:100;backdrop-filter:blur(12px)}
+        .topnav .logo{display:flex;align-items:center;gap:10px;text-decoration:none;color:var(--cream)}
+        .topnav .logo img{width:32px;height:32px;border-radius:8px}
+        .topnav .logo span{font-weight:700;font-size:1rem}
+        .topnav .links{display:flex;gap:20px}
+        .topnav .links a{color:var(--latte);font-size:0.88rem;font-weight:500;transition:color .2s}
+        .topnav .links a:hover,.topnav .links a.active{color:var(--cream)}
+
+        /* ── Article ─────────────────────────── */
+        article{padding:48px 0 80px}
+        article h1{font-size:2.4rem;font-weight:800;color:var(--espresso);margin-bottom:8px;letter-spacing:-0.02em;line-height:1.2}
+        article .subtitle{font-size:1.1rem;color:var(--latte);margin-bottom:24px}
+        article .meta{display:flex;gap:16px;flex-wrap:wrap;margin-bottom:32px;font-size:0.82rem;color:var(--mocha)}
+        article .meta span{background:var(--surface-2);padding:4px 12px;border-radius:8px;border:1px solid var(--surface-3)}
+        article h2{font-size:1.5rem;font-weight:700;color:var(--espresso);margin:48px 0 16px;padding-top:24px;border-top:1px solid var(--surface-3)}
+        article h3{font-size:1.15rem;font-weight:600;color:var(--cream);margin:32px 0 12px}
+        article p{margin-bottom:16px;color:var(--text);font-size:0.95rem}
+        article ul,article ol{margin:0 0 16px 24px}
+        article li{margin-bottom:8px;font-size:0.95rem;color:var(--text)}
+        article li strong{color:var(--cream)}
+        article blockquote{border-left:3px solid var(--blue);padding:12px 20px;margin:20px 0;background:var(--surface);border-radius:0 12px 12px 0;font-style:italic;color:var(--latte)}
+        article code{background:var(--surface-2);padding:2px 8px;border-radius:6px;font-size:0.85rem;color:var(--blue);font-family:'Fira Code',monospace,consolas}
+        article pre{background:var(--surface);border:1px solid var(--surface-3);border-radius:12px;padding:20px;margin:20px 0;overflow-x:auto}
+        article pre code{background:none;padding:0;color:var(--text)}
+        article table{width:100%;border-collapse:collapse;margin:20px 0;font-size:0.88rem}
+        article th{background:var(--surface-2);color:var(--cream);font-weight:600;text-align:left;padding:10px 14px;border:1px solid var(--surface-3)}
+        article td{padding:10px 14px;border:1px solid var(--surface-3);color:var(--text)}
+        article tr:nth-child(even){background:var(--surface)}
+        .highlight{background:var(--blue-mist);border:1px solid rgba(138,174,196,0.2);border-radius:12px;padding:20px;margin:20px 0}
+        .highlight strong{color:var(--blue)}
+        .mermaid{background:var(--surface);border:1px solid var(--surface-3);border-radius:12px;padding:24px;margin:24px 0;overflow-x:auto;text-align:center}
+        .mermaid svg{max-width:100%;height:auto}
+        .perf-bar{display:flex;align-items:center;gap:10px;margin:6px 0}
+        .perf-bar .label{width:180px;font-size:0.82rem;color:var(--latte);text-align:right}
+        .perf-bar .bar{height:24px;border-radius:6px;background:linear-gradient(90deg,var(--blue),var(--green));min-width:4px;transition:width .6s ease}
+        .perf-bar .val{font-size:0.82rem;color:var(--cream);font-weight:600}
+        .callout{background:var(--surface);border:1px solid var(--surface-3);border-radius:12px;padding:20px;margin:20px 0}
+        .callout-title{font-weight:600;color:var(--cream);margin-bottom:8px}
+        .back-link{display:inline-flex;align-items:center;gap:6px;margin-bottom:24px;font-size:0.88rem;color:var(--blue)}
+
+        @media(max-width:768px){
+            .topnav{padding:12px 16px}
+            .topnav .links{gap:14px}
+            article{padding:32px 0 60px}
+            article h1{font-size:1.8rem}
+            article h2{font-size:1.3rem}
+            .perf-bar .label{width:120px;font-size:0.75rem}
+            .mermaid{padding:16px 8px}
+        }
+    </style>
+</head>
+<body>
+
+<nav class="topnav">
+    <a href="index.html" class="logo">
+        <img src="https://avatars.githubusercontent.com/u/285745466?s=64&v=4" alt="Solace">
+        <span>Solace</span>
+    </a>
+    <div class="links">
+        <a href="index.html">Home</a>
+        <a href="blog.html" class="active">Blog</a>
+        <a href="https://github.com/HenshinLabs/solace-gemma4good">GitHub</a>
+    </div>
+</nav>
+
+<div class="container">
+<article>
+
+<a href="index.html" class="back-link">&#8592; Back to Solace</a>
+
+<h1>From Zero to 40 Tokens/Sec: Running Gemma 4 on Android via llama.cpp</h1>
+<p class="subtitle">The technical journey of building an on-device mental health companion with GGUF quantized models on ARM64</p>
+<div class="meta">
+    <span>HenshinLabs</span>
+    <span>May 2026</span>
+    <span>Gemma 4 Good Hackathon</span>
+    <span>llama.cpp Track</span>
+</div>
+
+<div class="callout">
+    <div class="callout-title">Submission for the Gemma 4 Good Hackathon</div>
+    <p>Solace addresses <strong>Health &amp; Sciences</strong>, <strong>Digital Equity &amp; Inclusivity</strong>, and <strong>Safety &amp; Trust</strong> — bringing private, offline mental health support to anyone with an Android phone, powered by Google's Gemma 4 E2B model running locally via llama.cpp.</p>
+</div>
+
+<h2>The Problem</h2>
+<p>One billion people worldwide suffer from mental health conditions. Most never receive care. The barriers are well-documented: cost, stigma, geography, and wait times. But there's a less obvious barrier — <strong>privacy</strong>. People in crisis won't talk to an app that phones home.</p>
+<p>Solace solves this by running a 3-billion parameter language model <strong>entirely on-device</strong>. No API calls. No cloud inference. No data leaves the phone. The AI companion works on a plane, in a rural village, during a network outage — anywhere.</p>
+
+<h2>Architecture Overview</h2>
+<p>Solace is a 17-module Android application following Clean Architecture with MVVM. The native inference layer uses llama.cpp compiled with multimodal (mtmd) support.</p>
+
+<div class="mermaid">
+graph TB
+    subgraph Presentation["Presentation Layer"]
+        UI1[Home Screen<br/>Mood picks, crisis helplines]
+        UI2[Chat Screen<br/>Conversation, streaming]
+        UI3[Guided Sessions<br/>5 therapeutic templates]
+        UI4[Settings Screen<br/>Theme, voice, inference params]
+    end
+
+    subgraph ViewModel["ViewModel Layer"]
+        VM1[ChatViewModel<br/>1,696 lines]
+        VM2[RoleplayViewModel<br/>1,099 lines]
+        VM3[ModelDownloadViewModel]
+        VM4[SettingsViewModel]
+    end
+
+    subgraph Data["Data Layer"]
+        D1[ConversationRepository]
+        D2[ModelRepository]
+        D3[SettingsRepository]
+        D4[Room Database]
+        D5[VoskSpeechManager]
+        D6[KittenTtsEngine]
+        D7[TtsTextFilter]
+    end
+
+    subgraph Runtime["Runtime Layer (Native C++)"]
+        R1[GgufEngine<br/>Kotlin JNI wrapper]
+        R2[LLMInference<br/>C++ class]
+        R3[mtmd<br/>Multimodal library]
+        R4[GGML<br/>Tensor operations]
+    end
+
+    subgraph Native["llama.cpp Submodule"]
+        N1[ggml-cpu<br/>ARM64 SIMD]
+        N2[ggml-vulkan<br/>GPU acceleration]
+        N3[common<br/>Tokenization, chat templates]
+    end
+
+    UI1 --> VM1
+    UI2 --> VM1
+    UI3 --> VM2
+    UI4 --> VM4
+    VM1 --> D1
+    VM1 --> D2
+    VM1 --> R1
+    VM2 --> R1
+    D1 --> D4
+    D5 --> VM1
+    D6 --> VM1
+    R1 -->|JNI| R2
+    R2 --> R3
+    R2 --> R4
+    R4 --> N1
+    R4 --> N2
+    R2 --> N3
+
+    style Presentation fill:#1A1714,stroke:#8AAEC4,color:#E8DDD0
+    style ViewModel fill:#1A1714,stroke:#D4C47A,color:#E8DDD0
+    style Data fill:#1A1714,stroke:#7AAE8E,color:#E8DDD0
+    style Runtime fill:#1A1714,stroke:#D4847A,color:#E8DDD0
+    style Native fill:#1A1714,stroke:#8A7A66,color:#E8DDD0
+</div>
+
+<h2>The GGUF-on-ARM Challenge</h2>
+<p>When we started, we had <strong>zero inference on Android</strong>. The llama.cpp library is designed for desktop/server environments. Getting it to compile, link, and run on Android's ARM64 architecture required solving several non-trivial problems.</p>
+
+<h3>Problem 1: Native Compilation</h3>
+<p>llama.cpp's CMake build system assumes a host environment. On Android, we cross-compile using the NDK. The key challenge was that <code>LLAMA_BUILD_TOOLS</code> had to be OFF (it pulled in dependencies that don't exist on Android), but we needed the <code>mtmd</code> (multimodal) library. The solution:</p>
+<pre><code>set(LLAMA_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
+# Manually add only the mtmd subdirectory
+set(LLAMA_INSTALL_VERSION "0.0.0" CACHE STRING "" FORCE)
+add_subdirectory(${LLAMA_DIR}/tools/mtmd mtmd)</code></pre>
+<p>This required setting <code>LLAMA_INSTALL_VERSION</code> because mtmd's CMakeLists.txt references it for <code>set_target_properties</code>.</p>
+
+<h3>Problem 2: ARM64 SIMD Optimization</h3>
+<p>Modern ARM64 chips have wildly different capabilities. A Snapdragon 8 Gen 3 has SVE+I8MM+FP16+Dot Product. A MediaTek Dimensity 9000 has Dot Product but no SVE. A budget Snapdragon 4 Gen 1 has only basic NEON.</p>
+<p>We compile <strong>seven separate native libraries</strong> and select the best one at runtime:</p>
+
+<div class="mermaid">
+graph LR
+    A[App Start] --> B{Read /proc/cpuinfo}
+    B --> C{ARMv8.4+SVE+I8MM?}
+    C -->|Yes| D[llama_android_v8_4_fp16_dotprod_i8mm_sve]
+    C -->|No| E{ARMv8.4+I8MM?}
+    E -->|Yes| F[llama_android_v8_4_fp16_dotprod_i8mm]
+    E -->|No| G{ARMv8.4+DotProd?}
+    G -->|Yes| H[llama_android_v8_4_fp16_dotprod]
+    G -->|No| I{ARMv8.2+DotProd?}
+    I -->|Yes| J[llama_android_v8_2_fp16_dotprod]
+    I -->|No| K{ARMv8.2+FP16?}
+    K -->|Yes| L[llama_android_v8_2_fp16]
+    K -->|No| M[llama_android<br/>Universal fallback]
+
+    style D fill:#2E2920,stroke:#7AAE8E,color:#E8DDD0
+    style F fill:#2E2920,stroke:#7AAE8E,color:#E8DDD0
+    style H fill:#2E2920,stroke:#8AAEC4,color:#E8DDD0
+    style J fill:#2E2920,stroke:#8AAEC4,color:#E8DDD0
+    style L fill:#2E2920,stroke:#D4C47A,color:#E8DDD0
+    style M fill:#2E2920,stroke:#D4847A,color:#E8DDD0
+</div>
+
+<p>The runtime detection reads <code>/proc/cpuinfo</code>, extracts CPU part IDs, and maps them to core types (Cortex-A55 = efficiency, Cortex-X3 = prime). This is critical — using the wrong SIMD path can mean the difference between 5 and 40 tokens per second.</p>
+
+<h3>Problem 3: Vulkan GPU Offload</h3>
+<p>llama.cpp supports Vulkan for GPU inference, but Android's Vulkan implementation varies wildly. We auto-detect <code>vulkan.hpp</code> headers at build time:</p>
+<pre><code>find_path(VULKAN_HPP_INCLUDE_DIR NAMES vulkan/vulkan.hpp ...)
+if(VULKAN_HPP_INCLUDE_DIR)
+    set(GGML_VULKAN ON CACHE BOOL "" FORCE)
+endif()</code></pre>
+<p>At runtime, we let users configure GPU offload layers in Settings. The optimal layer count depends on model size and available VRAM.</p>
+
+<h2>Performance Journey</h2>
+<p>This is where the story gets interesting. We started at <strong>zero tokens per second</strong> — the model wouldn't even load. Here's the progression:</p>
+
+<h3>Phase 1: It Doesn't Work (Week 1)</h3>
+<p>First attempts produced immediate crashes. The GGUF model file loaded, but <code>llama_decode()</code> returned -1. Root cause: context size mismatch. The model metadata reported 128K context, but we were initializing with 2048. Fix: read the GGUF header first with our <code>GGUFReader</code> before creating the context.</p>
+
+<h3>Phase 2: 2 Tokens/Sec — Qwen 0.8B (Week 1-2)</h3>
+<p>With the model finally loading, we got a painful 2 tokens/sec on Qwen 0.8B (our test model). The bottleneck was our batch configuration:</p>
+<pre><code>// Before: default batch sizes
+nBatch = 512, nUbatch = 512
+
+// After: auto-tuned based on thread count
+nBatch = getPerformanceBatchSize()  // 1024 for 12+ threads
+nUbatch = getPerformanceUbatchSize()  // 512 for 12+ threads</code></pre>
+<p>Also critical: we were running on the <strong>universal</strong> <code>llama_android</code> library — no SIMD optimizations. Just fixing the batch config brought us to ~8 tokens/sec on Qwen 0.8B.</p>
+
+<h3>Phase 3: 40 Tokens/Sec — Qwen 0.8B with SIMD (Week 2-3)</h3>
+<p>Adding ARM64-specific compilation was the breakthrough. The <code>llama_android_v8_4_fp16_dotprod_i8mm_sve</code> library uses:</p>
+<ul>
+    <li><strong>FP16</strong> — half-precision floating point, 2x throughput on supported cores</li>
+    <li><strong>Dot Product</strong> — integer dot product instructions, critical for quantized inference</li>
+    <li><strong>I8MM</strong> — int8 matrix multiply, 4x throughput for INT8 quantized models</li>
+    <li><strong>SVE</strong> — Scalable Vector Extension, auto-vectorizes to whatever width the hardware supports</li>
+</ul>
+<p>Result: <strong>40 tokens/sec</strong> on Qwen 0.8B Q4_K_M. A 20x improvement from where we started.</p>
+
+<div class="highlight">
+    <strong>Key insight:</strong> The I8MM and SVE instructions are what make quantized GGUF models fast on ARM. Without them, the CPU falls back to scalar operations. A Q4_K_M quantized model benefits enormously from these instructions because the dequantization math is integer-heavy.
+</div>
+
+<h3>Phase 4: 10-12 Tokens/Sec — Gemma 4 E2B (Week 3-4)</h3>
+<p>Gemma 4 E2B is a 3-billion parameter model (vs Qwen 0.8B's 800M). It's ~4x larger, so we expected ~10 tokens/sec, and that's exactly what we got: <strong>10-12 tokens/sec</strong> on a Snapdragon 8 Gen 3 device with the optimized library.</p>
+
+<p>Performance breakdown on a typical generation:</p>
+
+<div class="perf-bar"><span class="label">Prompt processing</span><div class="bar" style="width:85%"></div><span class="val">~85 tokens/sec</span></div>
+<div class="perf-bar"><span class="label">Token generation</span><div class="bar" style="width:30%"></div><span class="val">10-12 tokens/sec</span></div>
+<div class="perf-bar"><span class="label">First token latency</span><div class="bar" style="width:15%"></div><span class="val">~1.2 seconds</span></div>
+<div class="perf-bar"><span class="label">Context window</span><div class="bar" style="width:100%"></div><span class="val">128K tokens</span></div>
+<div class="perf-bar"><span class="label">Model load time</span><div class="bar" style="width:40%"></div><span class="val">~3 seconds</span></div>
+
+<p>With Vulkan GPU offload (36 layers), token generation improves to ~16-18 tokens/sec on devices with Adreno 750 GPU.</p>
+
+<h2>Multimodal Vision Pipeline</h2>
+<p>Gemma 4 supports native image understanding through a vision projector (mmproj). The pipeline from image to language model:</p>
+
+<div class="mermaid">
+sequenceDiagram
+    participant U as User
+    participant K as Kotlin (ChatViewModel)
+    participant J as JNI Bridge
+    participant C as C++ (LLMInference)
+    participant M as mtmd Library
+
+    U->>K: Attach image + type message
+    K->>K: Bitmap → RGB byte array
+    K->>J: startCompletionWithImage(prompt, rgbBytes, w, h)
+    J->>C: JNI call with byte array
+    C->>M: mtmd_bitmap_init(width, height, rgbBytes)
+    C->>M: Insert __media__ marker in prompt
+    C->>M: mtmd_tokenize(ctx, chunks, &text, bitmaps, 1)
+    M->>M: CLIP vision encoder processes image
+    M->>M: Projector maps to language embedding space
+    C->>M: mtmd_helper_eval_chunks()
+    C->>C: Token generation loop
+    C-->>J: Return token pieces
+    J-->>K: Stream to UI
+    K-->>U: Show response with image context
+</div>
+
+<p>The critical detail: the <code>mtmd_default_marker()</code> must be inserted at the correct position in the formatted prompt — at the start of the last user turn. For Gemma 4's chat template, this means finding <code>&lt;|turn&gt;user\n</code> and inserting the marker after it.</p>
+
+<h2>Offline Voice Pipeline</h2>
+<p>For users in crisis who can't type, voice interaction is essential. We needed a fully offline pipeline:</p>
+
+<div class="mermaid">
+graph LR
+    subgraph Input["Voice Input"]
+        MIC[Microphone] --> VOSK[Vosk ASR<br/>Offline, ~40MB model]
+        VOSK --> TEXT[Transcribed text]
+    end
+
+    subgraph Process["AI Processing"]
+        TEXT --> VM[ChatViewModel]
+        VM --> ENGINE[GgufEngine<br/>Gemma 4 E2B]
+        ENGINE --> RESPONSE[AI Response]
+    end
+
+    subgraph Output["Voice Output"]
+        RESPONSE --> FILTER[TtsTextFilter<br/>Strip thinking blocks]
+        FILTER --> TTS[KittenTtsEngine<br/>ONNX, ~23MB model]
+        TTS --> SPEAKER[Speaker]
+    end
+
+    style Input fill:#1A1714,stroke:#7AAE8E,color:#E8DDD0
+    style Process fill:#1A1714,stroke:#8AAEC4,color:#E8DDD0
+    style Output fill:#1A1714,stroke:#D4C47A,color:#E8DDD0
+</div>
+
+<p>Key challenges solved:</p>
+<ul>
+    <li><strong>Vosk model download</strong> — alphacephei.com hosted the model, but URLs were unreliable. Added retry logic with exponential backoff and a GitHub mirror fallback.</li>
+    <li><strong>TTS thinking block filtering</strong> — Gemma 4 outputs internal reasoning in <code>&lt;|channel&gt;thought</code> blocks. These must be stripped before TTS, or the user hears the model's internal monologue.</li>
+    <li><strong>Module boundaries</strong> — VoskSpeechManager and KittenTtsEngine lived in the <code>app/</code> module but ChatViewModel was in <code>feature-chat/</code>. Solved by moving shared classes to <code>core-data/</code>.</li>
+</ul>
+
+<h2>Data Flow: Complete Chat Message</h2>
+
+<div class="mermaid">
+sequenceDiagram
+    participant U as User
+    participant UI as ChatScreen
+    participant VM as ChatViewModel
+    participant DB as Room Database
+    participant EG as GgufEngine
+    participant CPP as LLMInference (C++)
+    participant TTS as KittenTtsEngine
+
+    U->>UI: Type message + tap send
+    UI->>VM: ChatAction.SendMessage
+    VM->>VM: Resolve selected model
+    VM->>DB: Create/get conversation
+    VM->>DB: Add user message
+    VM->>EG: Check supportsVision()
+    VM->>EG: load() if not loaded
+    EG->>CPP: JNI loadModel()
+    CPP->>CPP: Read GGUF header, create context
+    CPP->>CPP: Build sampler chain
+
+    VM->>EG: getResponseAsFlow(text)
+    EG->>CPP: JNI startCompletion()
+    CPP->>CPP: Apply chat template
+    CPP->>CPP: Tokenize prompt
+
+    loop Token Generation
+        CPP->>CPP: llama_decode() → sample → piece
+        CPP-->>EG: Return piece
+        EG-->>VM: Emit to Flow
+        VM->>UI: Update streamingText
+    end
+
+    CPP->>CPP: [EOG] reached
+    VM->>DB: Add assistant message
+    VM->>TTS: speak(filteredText)
+    TTS->>TTS: ONNX inference → AudioTrack
+
+    style U fill:#2E2920,stroke:#8AAEC4,color:#E8DDD0
+    style CPP fill:#2E2920,stroke:#D4847A,color:#E8DDD0
+</div>
+
+<h2>Module Architecture</h2>
+
+<div class="mermaid">
+graph TB
+    APP[app/] --> CD[core-data/]
+    APP --> CUI[core-ui/]
+    APP --> RGGUF[runtime-gguf/]
+    APP --> FC[feature-chat/]
+    APP --> FR[feature-roleplay/]
+    APP --> FS[feature-settings/]
+
+    FC --> CD
+    FC --> CUI
+    FC --> RGGUF
+    FR --> CD
+    FR --> CUI
+    FR --> RGGUF
+    FS --> CD
+    FS --> CUI
+
+    CD --> CDOM[core-domain/]
+    RGGUF --> CDOM
+
+    subgraph Native["Native (CMake)"]
+        RGGUF --> LLAMA[llama.cpp/]
+        RGGUF --> MTMD[tools/mtmd/]
+    end
+
+    subgraph External["External Models"]
+        MODEL[Gemma 4 E2B<br/>3.1GB GGUF]
+        MMPROJ[Vision mmproj<br/>941MB]
+        VOSK_M[Vosk Model<br/>40MB]
+        KITTEN[KittenTTS<br/>23MB ONNX]
+    end
+
+    MODEL --> RGGUF
+    MMPROJ --> RGGUF
+    VOSK_M --> CD
+    KITTEN --> CD
+
+    style APP fill:#242019,stroke:#8AAEC4,color:#E8DDD0
+    style Native fill:#242019,stroke:#D4847A,color:#E8DDD0
+    style External fill:#242019,stroke:#7AAE8E,color:#E8DDD0
+</div>
+
+<h2>Key Technical Decisions</h2>
+
+<table>
+    <tr><th>Decision</th><th>Why</th><th>Trade-off</th></tr>
+    <tr><td>Q4_K_M quantization</td><td>Best quality/speed ratio for 3B models on mobile</td><td>~3.1GB file size, requires 4GB+ RAM</td></tr>
+    <tr><td>llama.cpp over ONNX Runtime</td><td>Native ARM64 SIMD, Vulkan GPU, chat template support</td><td>Complex CMake build, JNI bridge required</td></tr>
+    <tr><td>7 ARM64 library variants</td><td>Maximize performance on each SoC</td><td>Larger APK (+40MB per variant)</td></tr>
+    <tr><td>Vosk over Android SpeechRecognizer</td><td>Fully offline, no Google dependency, streaming</td><td>40MB model download, slightly lower accuracy</td></tr>
+    <tr><td>KittenTTS over system TTS</td><td>Consistent voice, no cloud dependency, ONNX</td><td>23MB bundled, lower quality than cloud TTS</td></tr>
+    <tr><td>DuckDuckGo for web search</td><td>No API key required, works on Android</td><td>HTML scraping is fragile</td></tr>
+    <tr><td>mmproj as separate download</td><td>Vision is optional, saves 941MB for text-only users</td><td>Extra download step for vision users</td></tr>
+</table>
+
+<h2>Impact &amp; Accessibility</h2>
+<p>Solace is designed for the places that need it most:</p>
+<ul>
+    <li><strong>Rural areas</strong> with no internet — the model runs entirely offline after initial download</li>
+    <li><strong>Crisis situations</strong> where typing isn't possible — voice input/output handles the full loop</li>
+    <li><strong>Privacy-sensitive contexts</strong> — no data ever leaves the device, no accounts required</li>
+    <li><strong>Low-resource devices</strong> — works on Android 12+ phones with 4GB+ RAM</li>
+    <li><strong>Multilingual potential</strong> — Gemma 4 supports 100+ languages natively</li>
+</ul>
+
+<h2>What We Learned</h2>
+<ol>
+    <li><strong>ARM64 SIMD matters more than anything.</strong> The difference between the universal library and the I8MM+SVE variant is 8x on quantized models. This is the single biggest optimization lever.</li>
+    <li><strong>Batch size tuning is critical.</strong> Default llama.cpp batch sizes are designed for servers. Mobile needs different ratios — larger nBatch for prompt processing, smaller nUbatch for memory-constrained generation.</li>
+    <li><strong>GGUF metadata is your friend.</strong> Reading the chat template and context size from the GGUF header prevents a whole class of runtime errors.</li>
+    <li><strong>The mmproj pipeline works.</strong> Gemma 4's multimodal support via mtmd is production-ready on Android — we didn't need to modify any C++ code for vision, just wire the JNI bridge.</li>
+    <li><strong>Mental health AI needs guardrails.</strong> Crisis keyword detection, helpline numbers, and the system prompt design were as important as the technical implementation.</li>
+</ol>
+
+<h2>Build It Yourself</h2>
+<pre><code>git clone --recurse-submodules https://github.com/HenshinLabs/solace-gemma4good.git
+cd solace-gemma4good
+echo "sdk.dir=/path/to/Android/Sdk" > local.properties
+./gradlew assembleDebug
+# Output: app/build/outputs/apk/debug/Solace-v2.0.5-debug.apk</code></pre>
+
+<p>Full documentation: <a href="https://github.com/HenshinLabs/solace-gemma4good/tree/main/docs">docs/</a></p>
+
+<h2>Links</h2>
+<ul>
+    <li><strong>Repository:</strong> <a href="https://github.com/HenshinLabs/solace-gemma4good">github.com/HenshinLabs/solace-gemma4good</a></li>
+    <li><strong>Release:</strong> <a href="https://github.com/HenshinLabs/solace-gemma4good/releases/tag/v2.0.5">v2.0.5 (APK downloads)</a></li>
+    <li><strong>Website:</strong> <a href="https://henshinlabs.github.io/solace-gemma4good/">henshinlabs.github.io/solace-gemma4good</a></li>
+    <li><strong>Based on:</strong> <a href="https://github.com/Shuvam-Banerji-Seal/Master_LLM_app">MasterLLM</a> by Shuvam Banerji Seal</li>
+</ul>
+
+<div class="callout">
+    <div class="callout-title">Built with Gemma 4</div>
+    <p>This project was developed with the assistance of <strong><a href="https://huggingface.co/google/gemma-4-31B-it">Gemma 4 31B IT</a></strong> running on an NVIDIA A100 80GB GPU as a coding assistant. The same Gemma 4 family — the E2B variant — powers the on-device inference in the final application.</p>
+</div>
+
+</article>
+</div>
+
+<footer style="text-align:center;padding:40px 24px;color:#8A7A66;font-size:0.82rem;border-top:1px solid #2E2920">
+    <p><strong>Solace</strong> &mdash; <a href="https://www.kaggle.com/competitions/gemma-4-good-hackathon">Gemma 4 Good Hackathon</a> by <a href="https://github.com/HenshinLabs">HenshinLabs</a></p>
+</footer>
+
+</body>
+</html>
