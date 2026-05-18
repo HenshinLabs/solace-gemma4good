@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="branding/ic_solace_logo.svg" width="120" alt="Solace Logo"/>
+  <img src="branding/solace-logo.svg" width="160" alt="Solace Logo"/>
 </p>
 
 <h1 align="center">Solace</h1>
@@ -10,10 +10,11 @@
 
 <p align="center">
   <a href="https://github.com/HenshinLabs/solace-gemma4good/releases"><img src="https://img.shields.io/github/v/release/HenshinLabs/solace-gemma4good?style=flat-square" alt="Release"></a>
-  <a href="https://github.com/HenshinLabs/solace-gemma4good/actions"><img src="https://img.shields.io/github/last-commit/HenshinLabs/solace-gemma4good?style=flat-square" alt="Last Commit"></a>
+  <a href="https://github.com/HenshinLabs/solace-gemma4good/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-GPLv3-blue?style=flat-square" alt="License: GPL v3"></a>
   <a href="https://developer.android.com"><img src="https://img.shields.io/badge/Android-12%2B-green?style=flat-square&logo=android" alt="Android 12+"></a>
   <a href="https://kotlinlang.org"><img src="https://img.shields.io/badge/Kotlin-2.1.0-blue?style=flat-square&logo=kotlin" alt="Kotlin"></a>
   <a href="https://github.com/ggerganov/llama.cpp"><img src="https://img.shields.io/badge/llama.cpp-latest-orange?style=flat-square" alt="llama.cpp"></a>
+  <a href="https://www.kaggle.com/competitions/gemma-4-good-hackathon"><img src="https://img.shields.io/badge/Kaggle-Gemma%204%20Good-purple?style=flat-square&logo=kaggle" alt="Gemma 4 Good Hackathon"></a>
 </p>
 
 <p align="center">
@@ -281,9 +282,24 @@ Solace puts a compassionate AI companion directly on the user's phone. Using Goo
 - **Agent Tools**: Web search capability for current health information
 - **7 ARM64 Variants**: Runtime CPU feature detection selects the optimal native library
 
+## Built With Gemma
+
+Solace was developed with the help of **Gemma 4 31B IT** ([google/gemma-4-31B-it](https://huggingface.co/google/gemma-4-31B-it)) running on an **NVIDIA A100 80GB GPU** as a coding assistant. The 31-billion parameter model served as the primary development companion — assisting with architecture design, native C++/JNI integration, llama.cpp multimodal pipeline implementation, Kotlin coroutine flows, Jetpack Compose UI, CMake configuration, and debugging across the entire 17-module Android codebase.
+
+Gemma 4 31B was instrumental in:
+- Designing the native multimodal (mtmd) pipeline for image understanding on Android
+- Implementing the 7 ARM64-optimized library variants with runtime CPU feature detection
+- Building the Vosk ASR and KittenTTS integration for offline voice interaction
+- Crafting therapeutic system prompts for mental health guided sessions
+- Resolving complex cross-module dependency and Hilt injection issues
+
+The same Gemma 4 family — specifically the E2B (3B parameter) variant — powers the on-device inference in the final application.
+
 ---
 
 ## License
+
+Solace is licensed under the **GNU General Public License v3.0** — see the [LICENSE](LICENSE) file for details.
 
 This project builds upon [MasterLLM](https://github.com/Shuvam-Banerji-Seal/Master_LLM_app) by Shuvam Banerji Seal.
 
@@ -293,5 +309,5 @@ See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for third-party licenses in
 
 <p align="center">
   <strong>Solace</strong> — Built with care for those who need it most.<br/>
-  <sub>A submission for the Gemma 4 Good Hackathon by <a href="https://github.com/HenshinLabs">HenshinLabs</a></sub>
+  <sub>A submission for the <a href="https://www.kaggle.com/competitions/gemma-4-good-hackathon">Gemma 4 Good Hackathon</a> by <a href="https://github.com/HenshinLabs">HenshinLabs</a></sub>
 </p>
